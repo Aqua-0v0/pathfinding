@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="zh">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MRA* / A* 网格寻路可视化</title>
+    <style>
+        :root { --bg:#0b0d10; --panel:#12161c; --text:#e6e8eb; --muted:#9aa4af; --line:#222a35; }
+        body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background:var(--bg); color:var(--text); }
+        .wrap { display:grid; grid-template-columns: 340px 1fr; gap:14px; padding:14px; height:100vh; box-sizing:border-box; }
+        .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px; overflow:auto; }
+        .panel h1 { font-size:16px; margin:0 0 10px; }
+        .row { display:flex; gap:10px; align-items:center; margin:10px 0; }
+        .row label { font-size:12px; color:var(--muted); width:105px; }
+        .row input[type="number"], .row select { flex:1; background:#0f1318; color:var(--text); border:1px solid var(--line); border-radius:10px; padding:8px 10px; }
+        .row input[type="range"] { flex:1; }
+        .btns { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px; }
+        button { background:#1a2230; color:var(--text); border:1px solid var(--line); border-radius:12px; padding:10px; cursor:pointer; }
+        button:hover { filter:brightness(1.08); }
+        button:disabled { opacity:.5; cursor:not-allowed; }
+        .hint { font-size:12px; color:var(--muted); line-height:1.4; }
+        .stat { font-size:12px; color:var(--text); background:#0f1318; border:1px solid var(--line); border-radius:12px; padding:10px; }
+        .canvasWrap { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:10px; display:flex; flex-direction:column; }
+        canvas { background:#0f1318; border-radius:12px; display:block; width:100%; height:100%; }
+        .topbar { display:flex; gap:10px; align-items:center; justify-content:space-between; margin-bottom:10px; }
+        .badge { font-size:12px; color:var(--muted); }
+        .legend { display:flex; flex-wrap:wrap; gap:8px; font-size:12px; color:var(--muted); }
+        .chip { display:flex; align-items:center; gap:6px; }
+        .sw { width:12px; height:12px; border-radius:4px; border:1px solid #2b3442; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="panel">
+        <h1>MRA* / A* 网格寻路可视化</h1>
+
+        <div class="row">
+            <label>算法</label>
+            <select id="algo">
+                <option value="astar">A*</option>
+                <option value="mra">MRA*</option>
+            </select>
+        </div>
+
+        <div class="row">
+            <label>网格大小</label>
+            <input id="size" type="number" min="10" max="80" value="30" />
+        </div>
+
+        <div class="row">
+            <label>连通性</label>
+            <select id="conn">
+                <option value="8" selected>8连通</option>
+                <option value="4">4连通</option>
+            </select>
+        </div>
+
+        <div class="row">
+            <label>机器人</label>
+            <select id="footprint">
+                <option value="1" selected>点（1×1）</option>
+                <option value="2">体积（2×2）</option>
+            </select>
+        </div>
+
+        <div class="row">
+            <label>w1 (WA*)</label>
+            <input id="w1" type="number" min="1" max="10" step="0.1" value="2.0" />
+        </div>
+
+        <div class="row">
+            <label>w2 (gate)</label>
+            <input id="w2" type="number" min="1" max="10" step="0.1" value="1.5" />
+        </div>
+
+        <div class="row">
+            <label>分辨率</label>
+            <div class="hint" style="flex:1">固定为 1 / 2 / 4（Anchor=1）</div>
+        </div>
+
+        <div class="row">
+            <label>速度</label>
+            <input id="speed" type="range" min="1" max="120" value="30" />
+        </div>
+
+        <div class="btns">
+            <button id="reset">重置</button>
+            <button id="clear">清空障碍</button>
+            <button id="step">单步</button>
+            <button id="run">开始</button>
+            <button id="pause">暂停</button>
+            <button id="finish">跑到结束</button>
+        </div>
+
+        <div style="height:10px"></div>
+        <div class="stat" id="stat">状态：未开始</div>
+        <div style="height:10px"></div>
+    </div>
+
+    <div class="canvasWrap">
+        <div class="topbar">
+            <div class="badge">左键点击编辑</div>
+            <div class="legend">
+                <div class="chip"><span class="sw" style="background:#263241"></span> 障碍</div>
+                <div class="chip"><span class="sw" style="background:#1b3b22"></span> OPEN</div>
+                <div class="chip"><span class="sw" style="background:#3b2b1b"></span> CLOSED</div>
+                <div class="chip"><span class="sw" style="background:#2a1b3b"></span> PATH</div>
+                <div class="chip"><span class="sw" style="background:#2a7bd6"></span> 起点</div>
+                <div class="chip"><span class="sw" style="background:#d66f2a"></span> 终点</div>
+            </div>
+        </div>
+        <canvas id="cv"></canvas>
+    </div>
+</div>
+
+<script>
+    // ==================== Utilities ====================
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const key = (x,y,step) => `${step}|${x}|${y}`;
+    const euclid = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+
+    class MinHeap {
+        constructor() { this.arr = []; }
+        size() { return this.arr.length; }
+        peek() { return this.arr[0]; }
+        push(n) {
+            this.arr.push(n);
+            this._up(this.arr.length-1);
+        }
+        pop() {
+            if (this.arr.length===0) return null;
+            const top = this.arr[0];
+            const last = this.arr.pop();
+            if (this.arr.length) { this.arr[0]=last; this._down(0); }
+            return top;
+        }
+        _up(i){
+            while(i>0){
+                const p=(i-1)>>1;
+                if (this.arr[p].f < this.arr[i].f || (this.arr[p].f===this.arr[i].f && this.arr[p].g>=this.arr[i].g)) break;
+                [this.arr[p],this.arr[i]]=[this.arr[i],this.arr[p]];
+                i=p;
+            }
+        }
+        _down(i){
+            const n=this.arr.length;
+            while(true){
+                let l=i*2+1, r=l+1, m=i;
+                const better=(a,b)=> (this.arr[a].f < this.arr[b].f) || (this.arr[a].f===this.arr[b].f && this.arr[a].g>this.arr[b].g);
+                if(l<n && better(l,m)) m=l;
+                if(r<n && better(r,m)) m=r;
+                if(m===i) break;
+                [this.arr[m],this.arr[i]]=[this.arr[i],this.arr[m]];
+                i=m;
+            }
+        }
+    }
+
+    // ==================== Grid + Footprint ====================
+    function footprintCells(p, fp){
+        // reference point = bottom-left
+        if (fp===1) return [{x:p.x,y:p.y}];
+        return [
+            {x:p.x,y:p.y},{x:p.x+1,y:p.y},{x:p.x,y:p.y+1},{x:p.x+1,y:p.y+1},
+        ];
+    }
+
+    function inBounds(x,y,n){ return x>=0 && x<n && y>=0 && y<n; }
+
+    function footprintFree(grid, p, fp){
+        for(const c of footprintCells(p, fp)){
+            if(!inBounds(c.x,c.y,grid.n)) return false;
+            if(grid.occ[c.y][c.x]) return false;
+        }
+        return true;
+    }
+
+    function collisionFree(grid, a, b, fp){
+        // sample in unit steps (r=1) along 8-connected move
+        let dx=b.x-a.x, dy=b.y-a.y;
+        const steps=Math.max(Math.abs(dx), Math.abs(dy));
+        if(steps===0) return footprintFree(grid,a,fp);
+        const sx=Math.sign(dx), sy=Math.sign(dy);
+        let cur={x:a.x,y:a.y};
+        if(!footprintFree(grid,cur,fp)) return false;
+        for(let i=0;i<steps;i++){
+            cur={x:cur.x+sx,y:cur.y+sy};
+            if(!footprintFree(grid,cur,fp)) return false;
+        }
+        return true;
+    }
+
+    // ==================== A* and MRA* ====================
+    function neighbors(p, step, conn){
+        const dirs = conn===8 ?
+            [[step,0],[-step,0],[0,step],[0,-step],[step,step],[step,-step],[-step,step],[-step,-step]] :
+            [[step,0],[-step,0],[0,step],[0,-step]];
+        const out=[];
+        for(const [dx,dy] of dirs) out.push({x:p.x+dx,y:p.y+dy, diag:(dx!==0&&dy!==0)});
+        return out;
+    }
+
+    function moveCost(step, diag){ return diag ? step*Math.SQRT2 : step; }
+
+    function coincideIndices(p, steps){
+        const idx=[];
+        for(let i=0;i<steps.length;i++){
+            const r=steps[i];
+            if(p.x%r===0 && p.y%r===0) idx.push(i);
+        }
+        return idx;
+    }
+
+    function makeSearch(step, weight){
+        return {
+            step, weight,
+            open: new MinHeap(),
+            g: new Map(),
+            closed: new Set(),
+            parent: new Map(),
+            expanded: 0,
+        };
+    }
+
+    function pushOrUpdate(search, p, g, parentKey, h){
+        const k=key(p.x,p.y,search.step);
+        const old=search.g.get(k);
+        if(old!==undefined && g>=old) return;
+        search.g.set(k,g);
+        search.parent.set(k,parentKey);
+        const f=g + search.weight*h;
+        search.open.push({x:p.x,y:p.y,g,h,f});
+    }
+
+    function reconstruct(search, goal, step){
+        const out=[];
+        let k=key(goal.x,goal.y,step);
+        const seen=new Set();
+        while(k && !seen.has(k)){
+            seen.add(k);
+            const [st,x,y]=k.split('|');
+            out.push({x:+x,y:+y});
+            k=search.parent.get(k);
+        }
+        out.reverse();
+        return out;
+    }
+
+    function buildSolver(grid, cfg){
+        const steps = cfg.algo==='mra' ? [1,2,4] : [1];
+        const anchorIdx = 0;
+        // const searches = steps.map((r,i)=> makeSearch(r, i===anchorIdx ? 1.0 : cfg.w1));
+        const searches = steps.map((r,i)=> makeSearch(r, cfg.w1));
+
+        // init
+        const start = {...cfg.start};
+        const goal = {...cfg.goal};
+        const initIdx = coincideIndices(start, steps);
+        for(const i of initIdx){
+            if(!footprintFree(grid,start,cfg.fp)) continue;
+            pushOrUpdate(searches[i], start, 0, null, euclid(start,goal));
+        }
+
+        function chooseQueue(){
+            const anchor = searches[anchorIdx];
+            if(anchor.open.size()===0) return anchorIdx;
+            const anchorPeek = anchor.open.peek()
+            let anchorMin = anchorPeek.f;
+            anchorMin = anchorPeek.g + anchorPeek.h
+
+            let best = anchorIdx;
+            let bestF = anchorMin;
+            if(searches.length>=2 && searches[2].open.size()!==0) {
+                for(let i=0;i<searches.length;i++){
+                    if(i===anchorIdx) continue;
+                    const s=searches[i];
+                    if(s.open.size()===0) continue;
+                    const sPeek = s.open.peek()
+                    let f=sPeek.f;
+                    f= sPeek.g + sPeek.h
+                    if(f <= cfg.w2*anchorMin){
+                        if(best===anchorIdx || f<=bestF){ best=i; bestF=f; }
+                    }
+                }
+            }
+            return best;
+        }
+
+        let done=false;
+        let found=false;
+        let path=[];
+        let msg='';
+
+        function stepOnce(){
+            if(done) return {done,found,path,msg};
+
+            // all empty?
+            let any=false;
+            for(const s of searches){ if(s.open.size()>0){ any=true; break; } }
+            if(!any){ done=true; found=false; msg='OPEN 全空：无解'; return {done,found,path,msg}; }
+
+            const qi = (cfg.algo==='mra') ? chooseQueue() : 0;
+            const s = searches[qi];
+            let cur = s.open.pop();
+            while(cur){
+                const ck = key(cur.x,cur.y,s.step);
+                if(!s.closed.has(ck)) break;
+                cur = s.open.pop();
+            }
+            if(!cur){ return {done,found,path,msg:'当前队列为空（跳过）'}; }
+
+            const ck = key(cur.x,cur.y,s.step);
+            s.closed.add(ck);
+            s.expanded++;
+
+            if(qi===0 && cur.x===cfg.goal.x && cur.y===cfg.goal.y){
+                done=true; found=true;
+                path = reconstruct(s, cfg.goal, s.step);
+                msg='Anchor 到达终点：成功';
+                return {done,found,path,msg};
+            }
+
+            for(const nb of neighbors({x:cur.x,y:cur.y}, s.step, cfg.conn)){
+                const np = {x:nb.x,y:nb.y};
+                if(!inBounds(np.x,np.y,grid.n)) continue;
+                if(cfg.fp===2 && (!inBounds(np.x+1,np.y+1,grid.n))) continue;
+
+                if(!collisionFree(grid, {x:cur.x,y:cur.y}, np, cfg.fp)) continue;
+
+                const nk = key(np.x,np.y,s.step);
+                if(s.closed.has(nk)) continue;
+
+                const ng = cur.g + moveCost(s.step, nb.diag);
+                pushOrUpdate(s, np, ng, ck, euclid(np,cfg.goal));
+
+                if(cfg.algo==='mra' && s.step > 1) {
+                    const isStraight = nb.x===cur.x || nb.y===cur.y
+                    if (isStraight) {
+                        if ((cfg.goal.x >= cur.x && cfg.goal.x <= nb.x && cfg.goal.y === nb.y) || (cfg.goal.x >= nb.x && cfg.goal.x <= cur.x && cfg.goal.y === nb.y) || (cfg.goal.y >= cur.y && cfg.goal.y <= nb.y && cfg.goal.x === nb.x) || (cfg.goal.y >= nb.y && cfg.goal.y <= cur.y && cfg.goal.x === nb.x)) {
+                            done=true; found=true;
+                            path = reconstruct(s, cfg.goal, s.step);
+                            msg='Anchor 到达终点：成功';
+                            return {done,found,path,msg};
+                        }
+                    } else {
+                        if ((Math.abs(cfg.goal.x-cur.x) === Math.abs(cfg.goal.y-cur.y) && Math.abs(cfg.goal.x-cur.x) <= s.step) &&
+                            ((cfg.goal.x >= cur.x && cfg.goal.x <= nb.x && cfg.goal.y >= cur.y && cfg.goal.y <= nb.y ) ||
+                                (cfg.goal.x >= nb.x && cfg.goal.x <= cur.x && cfg.goal.y >= cur.y && cfg.goal.y <= nb.y) ||
+                                (cfg.goal.x >= cur.x && cfg.goal.x <= nb.x && cfg.goal.y >= nb.y && cfg.goal.y <= cur.y) ||
+                                (cfg.goal.x >= nb.x && cfg.goal.x <= cur.x && cfg.goal.y >= nb.y && cfg.goal.y <= cur.y) )) {
+                            done=true; found=true;
+                            path = reconstruct(s, cfg.goal, s.step);
+                            msg='Anchor 到达终点：成功';
+                            return {done,found,path,msg};
+                        }
+                    }
+                }
+
+                if(cfg.algo==='mra'){
+                    const idxs = coincideIndices(np, steps);
+                    for(const j of idxs){
+                        if(j===qi) continue;
+                        const sj=searches[j];
+                        const jk=key(np.x,np.y,sj.step);
+                        if(sj.closed.has(jk)) continue;
+                        // share as a seed (same g)
+                        pushOrUpdate(sj, np, ng, ck, euclid(np,cfg.goal));
+                    }
+                }
+            }
+
+            msg = `扩展：Q${qi} (r=${s.step}, w=${s.weight}) @ (${cur.x},${cur.y})`;
+            return {done,found,path,msg};
+        }
+
+        return {
+            steps,
+            searches,
+            stepOnce,
+            get done(){return done;},
+            get found(){return found;},
+            get path(){return path;},
+        };
+    }
+
+    // ==================== UI / Rendering ====================
+    const cv = document.getElementById('cv');
+    const ctx = cv.getContext('2d');
+
+    const el = id => document.getElementById(id);
+    const statEl = el('stat');
+
+    const state = {
+        grid: null,
+        cell: 18,
+        start: {x:2,y:2},
+        goal: {x:26,y:16},
+        solver: null,
+        running: false,
+        timer: null,
+        lastMsg: '',
+    };
+
+    function makeGrid(n){
+        const occ = Array.from({length:n}, ()=> Array.from({length:n}, ()=>false));
+        return {n, occ};
+    }
+
+    function resizeCanvas(){
+        const wrap = cv.parentElement;
+        const w = wrap.clientWidth;
+        const h = wrap.clientHeight - 0;
+        cv.width = Math.floor(w * devicePixelRatio);
+        cv.height = Math.floor(h * devicePixelRatio);
+        cv.style.width = w+'px';
+        cv.style.height = h+'px';
+        ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+        // choose cell size
+        const n = state.grid.n;
+        state.cell = Math.floor(Math.min((w-10)/n, (h-10)/n));
+        state.cell = clamp(state.cell, 8, 28);
+    }
+
+    function draw(){
+        const grid = state.grid;
+        const n = grid.n;
+        const cell = state.cell;
+        ctx.clearRect(0,0,cv.width,cv.height);
+
+        // background
+        ctx.fillStyle = '#0f1318';
+        ctx.fillRect(0,0,n*cell,n*cell);
+
+        // overlay: open/closed
+        let openSet = new Set();
+        let closedSet = new Set();
+        let pathSet = new Set();
+
+        if(state.solver){
+            const searches = state.solver.searches;
+            // show union of sets (anchor step=1 visualization)
+            const a = searches[0];
+            // for(const k of a.g.keys()){
+            //     // only step=1 keys
+            //     const parts = k.split('|');
+            //     const x=+parts[1], y=+parts[2];
+            //     // don't mark everything as open; we only have closed set explicitly.
+            //     if(a.closed.has(k)) closedSet.add(`${x}|${y}`);
+            // }
+
+            for(const b of searches) {
+                for(const k of b.g.keys()){
+                    // only step=1 keys
+                    const parts = k.split('|');
+                    const x=+parts[1], y=+parts[2];
+                    // don't mark everything as open; we only have closed set explicitly.
+                    if(b.closed.has(k)) closedSet.add(`${x}|${y}`);
+                }
+
+            }
+            // approximate open from heap snapshot
+            for(const node of a.open.arr){ openSet.add(`${node.x}|${node.y}`); }
+            for(const p of state.solver.path || []){ pathSet.add(`${p.x}|${p.y}`); }
+        }
+
+        // obstacles
+        for(let y=0;y<n;y++){
+            for(let x=0;x<n;x++){
+                if(grid.occ[y][x]){
+                    ctx.fillStyle = '#263241';
+                    ctx.fillRect(x*cell,y*cell,cell,cell);
+                }
+            }
+        }
+
+        // open
+        for(const k of openSet){
+            const [x,y]=k.split('|').map(Number);
+            ctx.fillStyle = '#1b3b22';
+            ctx.fillRect(x*cell,y*cell,cell,cell);
+        }
+        // closed
+        for(const k of closedSet){
+            const [x,y]=k.split('|').map(Number);
+            ctx.fillStyle = '#3b2b1b';
+            ctx.fillRect(x*cell,y*cell,cell,cell);
+        }
+        // path
+        for(const k of pathSet){
+            const [x,y]=k.split('|').map(Number);
+            ctx.fillStyle = '#2a1b3b';
+            ctx.fillRect(x*cell,y*cell,cell,cell);
+        }
+
+        // start/goal
+        ctx.fillStyle = '#2a7bd6';
+        ctx.fillRect(state.start.x*cell,state.start.y*cell,cell,cell);
+        ctx.fillStyle = '#d66f2a';
+        ctx.fillRect(state.goal.x*cell,state.goal.y*cell,cell,cell);
+
+        // grid lines
+        ctx.strokeStyle = '#1b2230';
+        ctx.lineWidth = 1;
+        for(let i=0;i<=n;i++){
+            ctx.beginPath(); ctx.moveTo(i*cell,0); ctx.lineTo(i*cell,n*cell); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0,i*cell); ctx.lineTo(n*cell,i*cell); ctx.stroke();
+        }
+    }
+
+    function updateStat(){
+        const algo = el('algo').value;
+        const fp = +el('footprint').value;
+        let txt = '';
+        if(!state.solver){
+            txt = '状态：未开始';
+        } else {
+            const s = state.solver.searches;
+            const expanded = s.map(x=>x.expanded);
+            const openSizes = s.map(x=>x.open.size());
+            txt = `算法：${algo.toUpperCase()} | 机器人：${fp===2?'2×2':'1×1'}\n`+
+                `Expanded per queue: [${expanded.join(', ')}]  |  OPEN sizes: [${openSizes.join(', ')}]\n`+
+                `${state.lastMsg || ''}`;
+            if(state.solver.done){
+                txt += state.solver.found ? '\n结果：找到路径（紫色）' : '\n结果：无解';
+            }
+        }
+        statEl.textContent = txt;
+    }
+
+    function rebuildSolver(){
+        const cfg = {
+            algo: el('algo').value,
+            w1: parseFloat(el('w1').value),
+            w2: parseFloat(el('w2').value),
+            conn: +el('conn').value,
+            fp: +el('footprint').value,
+            start: {...state.start},
+            goal: {...state.goal},
+        };
+        // validate start/goal footprint
+        if(!footprintFree(state.grid, cfg.start, cfg.fp) || !footprintFree(state.grid, cfg.goal, cfg.fp)){
+            state.solver = null;
+            state.lastMsg = '起点或终点 footprint 与障碍/边界冲突';
+            draw();
+            updateStat();
+            return;
+        }
+        state.solver = buildSolver(state.grid, cfg);
+        state.lastMsg = '已初始化，等待开始';
+        draw();
+        updateStat();
+    }
+
+    function stopRun(){
+        state.running=false;
+        if(state.timer) clearInterval(state.timer);
+        state.timer=null;
+        el('run').disabled=false;
+        el('pause').disabled=true;
+    }
+
+    function startRun(){
+        if(!state.solver) rebuildSolver();
+        if(!state.solver) return;
+        stopRun();
+        state.running=true;
+        el('run').disabled=true;
+        el('pause').disabled=false;
+        const tickMs = Math.floor(1000 / (+el('speed').value));
+        state.timer = setInterval(()=>{
+            if(!state.solver || state.solver.done){ stopRun(); draw(); updateStat(); return; }
+            const r = state.solver.stepOnce();
+            state.lastMsg = r.msg;
+            draw(); updateStat();
+        }, tickMs);
+    }
+
+    function stepOnceUI(){
+        if(!state.solver) rebuildSolver();
+        if(!state.solver) return;
+        if(state.solver.done) return;
+        const r = state.solver.stepOnce();
+        state.lastMsg = r.msg;
+        draw();
+        updateStat();
+    }
+
+    function runToFinish(){
+        if(!state.solver) rebuildSolver();
+        if(!state.solver) return;
+        stopRun();
+        let guard=0;
+        while(!state.solver.done && guard<200000){
+            const r = state.solver.stepOnce();
+            state.lastMsg = r.msg;
+            guard++;
+        }
+        draw();
+        updateStat();
+    }
+
+    function resetAll(){
+        stopRun();
+        const n = clamp(parseInt(el('size').value||'30',10), 30, 80);
+        state.grid = makeGrid(n);
+        state.start = {x:2,y:2};
+        state.goal = {x:n-4,y:n-4};
+        state.solver = null;
+        state.lastMsg = '已重置';
+        resizeCanvas();
+        draw();
+        updateStat();
+    }
+
+    function clearWalls(){
+        stopRun();
+        for(let y=0;y<state.grid.n;y++) for(let x=0;x<state.grid.n;x++) state.grid.occ[y][x]=false;
+        state.solver=null;
+        state.lastMsg='已清空障碍';
+        draw();
+        updateStat();
+    }
+
+    function cellFromEvent(e){
+        const rect = cv.getBoundingClientRect();
+        const x = Math.floor((e.clientX-rect.left)/state.cell);
+        const y = Math.floor((e.clientY-rect.top)/state.cell);
+        return {x,y};
+    }
+
+    // cv.addEventListener('mousedown', (e)=>{
+    //     stopRun();
+    //     const p = cellFromEvent(e);
+    //     const n = state.grid.n;
+    //     if(!inBounds(p.x,p.y,n)) return;
+    //     const mode = el('mode').value;
+    //
+    //     if(mode==='wall'){
+    //         state.grid.occ[p.y][p.x]=true;
+    //     } else if(mode==='erase'){
+    //         state.grid.occ[p.y][p.x]=false;
+    //     } else if(mode==='start'){
+    //         state.start = {x:p.x,y:p.y};
+    //     } else if(mode==='goal'){
+    //         state.goal = {x:p.x,y:p.y};
+    //     }
+    //     state.solver=null;
+    //     state.lastMsg='已编辑地图（需要重新开始）';
+    //     draw();
+    //     updateStat();
+    // });
+
+    // ======== Drag Edit (no mode) ========
+    state.drag = {
+        kind: null,      // 'start' | 'goal' | null
+        paint: null,     // 'wall' | 'erase' | null
+        lastKey: null,   // to avoid re-applying same cell
+    };
+
+    function sameCell(a,b){ return a && b && a.x===b.x && a.y===b.y; }
+
+    function isStartCell(p){ return p.x===state.start.x && p.y===state.start.y; }
+    function isGoalCell(p){ return p.x===state.goal.x && p.y===state.goal.y; }
+
+    function currentFootprint(){ return +el('footprint').value; }
+
+    function trySetEndpoint(kind, p){
+        const n = state.grid.n;
+        if(!inBounds(p.x,p.y,n)) return;
+
+        // 不允许拖到障碍/越界（按当前 footprint 校验）
+        const fp = currentFootprint();
+        if(!footprintFree(state.grid, p, fp)) return;
+
+        // 允许 start/goal 重合吗？这里按“允许”处理；如果不想允许，把下面两行取消注释
+        // if(kind==='start' && sameCell(p, state.goal)) return;
+        // if(kind==='goal' && sameCell(p, state.start)) return;
+
+        if(kind==='start') state.start = {x:p.x,y:p.y};
+        if(kind==='goal')  state.goal  = {x:p.x,y:p.y};
+    }
+
+    function applyPaint(p){
+        const n = state.grid.n;
+        if(!inBounds(p.x,p.y,n)) return;
+
+        // 划过起点/终点忽略
+        if(isStartCell(p) || isGoalCell(p)) return;
+
+        if(state.drag.paint === 'wall') {
+            state.grid.occ[p.y][p.x] = true;
+        } else if(state.drag.paint === 'erase') {
+            state.grid.occ[p.y][p.x] = false;
+        }
+    }
+
+    function markEdited(){
+        state.solver = null;
+        state.lastMsg = '已编辑地图（需要重新开始）';
+        draw();
+        updateStat();
+    }
+
+    cv.addEventListener('pointerdown', (e)=>{
+        if(e.button !== 0) return; // only left
+        stopRun();
+        cv.setPointerCapture(e.pointerId);
+
+        const p = cellFromEvent(e);
+        const n = state.grid.n;
+        if(!inBounds(p.x,p.y,n)) return;
+
+        state.drag.lastKey = `${p.x}|${p.y}`;
+
+        if(isStartCell(p)){
+            state.drag.kind = 'start';
+            state.drag.paint = null;
+            return;
+        }
+        if(isGoalCell(p)){
+            state.drag.kind = 'goal';
+            state.drag.paint = null;
+            return;
+        }
+
+        state.drag.kind = null;
+        state.drag.paint = state.grid.occ[p.y][p.x] ? 'erase' : 'wall';
+
+        applyPaint(p);
+        markEdited();
+    });
+
+    cv.addEventListener('pointermove', (e)=>{
+        if(!cv.hasPointerCapture(e.pointerId)) return;
+
+        const p = cellFromEvent(e);
+        const n = state.grid.n;
+        if(!inBounds(p.x,p.y,n)) return;
+
+        const k = `${p.x}|${p.y}`;
+        if(k === state.drag.lastKey) return;
+        state.drag.lastKey = k;
+
+        if(state.drag.kind === 'start' || state.drag.kind === 'goal'){
+            trySetEndpoint(state.drag.kind, p);
+            markEdited();
+            return;
+        }
+
+        if(state.drag.paint){
+            applyPaint(p);
+            markEdited();
+        }
+    });
+
+    function endDrag(e){
+        if(cv.hasPointerCapture(e.pointerId)){
+            cv.releasePointerCapture(e.pointerId);
+        }
+        state.drag.kind = null;
+        state.drag.paint = null;
+        state.drag.lastKey = null;
+    }
+
+    cv.addEventListener('pointerup', endDrag);
+    cv.addEventListener('pointercancel', endDrag);
+    cv.addEventListener('pointerleave', (e)=>{
+        if(e.pointerId != null) endDrag(e);
+    });
+
+
+    window.addEventListener('resize', ()=>{ resizeCanvas(); draw(); });
+
+    // UI handlers
+    el('reset').onclick = resetAll;
+    el('clear').onclick = clearWalls;
+    el('step').onclick = stepOnceUI;
+    el('run').onclick = startRun;
+    el('pause').onclick = ()=>{ stopRun(); state.lastMsg='已暂停'; updateStat(); };
+    el('finish').onclick = runToFinish;
+
+    ['algo','conn','footprint','w1','w2','size'].forEach(id=>{
+        el(id).addEventListener('change', ()=>{ stopRun(); state.solver=null; state.lastMsg='参数改变（需要重新开始）'; if(id==='size') resetAll(); else { draw(); updateStat(); } });
+    });
+
+    el('speed').addEventListener('input', ()=>{ if(state.running){ startRun(); } });
+
+    // init
+    resetAll();
+</script>
+</body>
+</html>
