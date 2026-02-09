@@ -215,6 +215,14 @@
     </div>
 
     <div style="height:10px"></div>
+    <h2>导入 / 导出</h2>
+    <div class="btns">
+      <button id="exportBtn">导出配置与地图</button>
+      <button id="importBtn">导入配置与地图</button>
+    </div>
+    <input id="importFile" type="file" accept=".json,application/json" style="display:none">
+
+    <div style="height:10px"></div>
     <div class="stat" id="stat">状态：未开始</div>
 
     <div style="height:10px"></div>
@@ -779,17 +787,18 @@ function makeSearch(step, weight){
   };
 }
 
-function pushOrUpdate(search, node, g, parentKey, h){
+function pushOrUpdate(search, node, g, parentKey, h, globalParent){
   const k = key(search.step, node.x, node.z, node.y);
   const old = search.g.get(k);
   if(old!==undefined && g>=old) return;
   search.g.set(k,g);
   search.parent.set(k,parentKey);
+  if(globalParent) globalParent.set(k, parentKey);
   const f = g + search.weight*h;
   search.open.push({x:node.x, z:node.z, y:node.y, g, h, f});
 }
 
-function reconstruct(search, goalKey){
+function reconstruct(goalKey, parentMap){
   const out=[];
   let k = goalKey;
   const seen=new Set();
@@ -798,7 +807,7 @@ function reconstruct(search, goalKey){
     const parts = k.split('|');
     // parts: step|x|z|y
     out.push({x:+parts[1], z:+parts[2], y:+parts[3]});
-    k = search.parent.get(k);
+    k = parentMap.get(k);
   }
   out.reverse();
   return out;
@@ -808,6 +817,7 @@ function buildSolver(map, cfg){
   const steps = cfg.algo==='mra' ? [1,2,4] : [1];
   const anchorIdx = 0;
   const searches = steps.map((r,i) => makeSearch(r, cfg.w1All ? cfg.w1 : (i===anchorIdx ? 1.0 : cfg.w1)));
+  const globalParent = new Map();
 
   const start = {...cfg.start}; // {x,z,y}
   const goal  = {...cfg.goal};
@@ -817,7 +827,7 @@ function buildSolver(map, cfg){
   for(const i of initIdx){
     const s = searches[i];
     const h = heuristicCost(start, goal, cfg.params);
-    pushOrUpdate(s, start, 0, null, h);
+    pushOrUpdate(s, start, 0, null, h, globalParent);
   }
 
   function chooseQueue(){
@@ -877,7 +887,7 @@ function buildSolver(map, cfg){
     // goal test (anchor only to match the 2D behavior)
     if(qi===anchorIdx && cur.x===goal.x && cur.z===goal.z && cur.y===goal.y){
       done=true; found=true;
-      path = reconstruct(s, ck);
+      path = reconstruct(ck, globalParent);
       msg='Anchor 到达终点：成功';
       return {done,found,path,msg};
     }
@@ -898,7 +908,44 @@ function buildSolver(map, cfg){
 
       const ng = cur.g + move.cost;
       const h = heuristicCost({x:nx,z:nz,y:ny}, goal, cfg.params);
-      pushOrUpdate(s, {x:nx,z:nz,y:ny}, ng, ck, h);
+      pushOrUpdate(s, {x:nx,z:nz,y:ny}, ng, ck, h, globalParent);
+
+      // MRA* early goal reach test (match 2D stepOnce semantics, extended with Y validation)
+      if(cfg.algo==='mra' && s.step > 1){
+        const isStraight = nx===cur.x || nz===cur.z;
+        let onSegment = false;
+        if(isStraight){
+          if ((goal.x >= cur.x && goal.x <= nx && goal.z === nz) || (goal.x >= nx && goal.x <= cur.x && goal.z === nz) ||
+              (goal.z >= cur.z && goal.z <= nz && goal.x === nx) || (goal.z >= nz && goal.z <= cur.z && goal.x === nx)) {
+            onSegment = true;
+          }
+        } else {
+          const dxg = Math.abs(goal.x - cur.x);
+          const dzg = Math.abs(goal.z - cur.z);
+          if(dxg === dzg && dxg <= s.step &&
+             ((goal.x >= cur.x && goal.x <= nx && goal.z >= cur.z && goal.z <= nz) ||
+              (goal.x >= nx && goal.x <= cur.x && goal.z >= cur.z && goal.z <= nz) ||
+              (goal.x >= cur.x && goal.x <= nx && goal.z >= nz && goal.z <= cur.z) ||
+              (goal.x >= nx && goal.x <= cur.x && goal.z >= nz && goal.z <= cur.z))) {
+            onSegment = true;
+          }
+        }
+        if(onSegment){
+          const moveGoal = simulateMove(map, {x:cur.x,z:cur.z,y:cur.y}, goal.x, goal.z, s.step, cfg.params);
+          if(moveGoal && moveGoal.y === goal.y){
+            done=true; found=true;
+            const gGoal = cur.g + moveGoal.cost;
+            const goalKey = key(s.step, goal.x, goal.z, goal.y);
+            // record parent so path can be reconstructed
+            s.parent.set(goalKey, ck);
+            s.g.set(goalKey, gGoal);
+            globalParent.set(goalKey, ck);
+            path = reconstruct(goalKey, globalParent);
+            msg='Anchor 鍒拌揪缁堢偣锛氭垚鍔?';
+            return {done,found,path,msg};
+          }
+        }
+      }
 
       // share seeds across resolutions if coincident in x,z
       if(cfg.algo==='mra'){
@@ -908,7 +955,7 @@ function buildSolver(map, cfg){
           const sj = searches[j];
           const jk = key(sj.step, nx, nz, ny);
           if(sj.closed.has(jk)) continue;
-          pushOrUpdate(sj, {x:nx,z:nz,y:ny}, ng, ck, h);
+          pushOrUpdate(sj, {x:nx,z:nz,y:ny}, ng, ck, h, globalParent);
         }
       }
     }
@@ -1349,6 +1396,14 @@ function drawPoint3D(p, color, r=3){
   ctx.arc(pr.x, pr.y, r, 0, Math.PI*2);
   ctx.fillStyle = color;
   ctx.fill();
+}
+
+function drawMarkerBox(x0, z0, y0, color){
+  const h = 0.05; // 5cm height
+  const faces = [];
+  collectBoxFaces(faces, x0, z0, CELL, CELL, y0, y0 + h, color);
+  faces.sort((a,b)=> b.depth - a.depth);
+  for(const f of faces) drawFace(f);
 }
 
 // =============================== App State ===============================
@@ -1825,8 +1880,10 @@ function render(){
     // OPEN
     for(let i=0;i<openArr.length && i<maxPts;i++){
       const n=openArr[i];
-      const p = fineToWorldCenter(n.x,n.z,uToM(n.y));
-      drawPoint3D({x:p.x,y:p.y+0.05,z:p.z}, 'rgba(27,59,34,.85)', 2.4);
+      const x0 = n.x * CELL;
+      const z0 = n.z * CELL;
+      const y0 = uToM(n.y) + 0.02;
+      drawMarkerBox(x0, z0, y0, '#1b6b39');
     }
 
     // CLOSED union
@@ -1838,13 +1895,15 @@ function render(){
         if(c++ > 800) break; // sample per queue
         const parts = k.split('|');
         const x=+parts[1], z=+parts[2], y=+parts[3];
-        const p = fineToWorldCenter(x,z,uToM(y));
-        closedPts.push(p);
+        closedPts.push({x,z,y});
       }
     }
     closedPts = closedPts.slice(0, maxPts);
     for(const p of closedPts){
-      drawPoint3D({x:p.x,y:p.y+0.05,z:p.z}, 'rgba(59,43,27,.75)', 2.2);
+      const x0 = p.x * CELL;
+      const z0 = p.z * CELL;
+      const y0 = uToM(p.y) + 0.02;
+      drawMarkerBox(x0, z0, y0, '#7a4b2a');
     }
   }
 
@@ -2147,6 +2206,39 @@ el('step').onclick = stepOnceUI;
 el('run').onclick = startRun;
 el('pause').onclick = ()=>{ stopRun(); state.lastMsg='已暂停'; updateStat(); };
 el('finish').onclick = runToFinish;
+el('exportBtn').onclick = ()=>{
+  try{
+    const data = buildExportData();
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mra_3d_${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    state.lastMsg='已导出配置与地图';
+    updateStat();
+  } catch(err){
+    state.lastMsg = '导出失败：' + (err && err.message ? err.message : err);
+    updateStat(); render();
+  }
+};
+el('importBtn').onclick = ()=>{ el('importFile').click(); };
+el('importFile').addEventListener('change', async (e)=>{
+  const f = e.target.files && e.target.files[0];
+  if(!f) return;
+  try{
+    const text = await f.text();
+    const data = JSON.parse(text);
+    applyImportData(data);
+  } catch(err){
+    state.lastMsg = '导入失败：' + (err && err.message ? err.message : err);
+    updateStat(); render();
+  } finally {
+    e.target.value = '';
+  }
+});
 
 ['algo','w1','w1All','w2','costM','costN','agentH','stepUp','stepDown','banTex','ignoreTex'].forEach(id=>{
   el(id).addEventListener('change', ()=>{ stopRun(); state.solver=null; state.lastMsg='参数改变（需要重新开始）'; updateStat(); render(); });
@@ -2185,6 +2277,192 @@ function syncEndpointYUI(){
   updateStat();
   render();
 }
+
+// =============================== Import / Export ===============================
+function spanToArr(sp){ return [sp.MinY|0, sp.MaxY|0, sp.Texture|0]; }
+function arrToSpan(a){
+  if(!a) return new Span(0,0,1);
+  return new Span((a[0]|0), (a[1]|0), (a[2]|0));
+}
+
+function buildExportData(){
+  const columns = [];
+  for(let mz=0;mz<state.map.heightM;mz++){
+    for(let mx=0;mx<state.map.widthM;mx++){
+      const [col, ok] = state.map.space.GetColumnByMeter(mx, mz);
+      if(!ok || !col) continue;
+      const terr = col.Terrain || new Span(0,0,1);
+      const hasOther = col.Other && col.Other.length;
+      const hasHP = col.HighPrecision && col.HighPrecision.Spans && col.HighPrecision.Spans.some(arr=>arr && arr.length);
+      const nonDefaultTerr = ((terr.MaxY|0) !== 0) || ((terr.Texture|0) !== 1);
+      if(!nonDefaultTerr && !hasOther && !hasHP) continue;
+
+      const entry = {mx, mz, terrain: spanToArr(terr)};
+      if(hasOther){
+        entry.other = col.Other.map(spanToArr);
+      }
+      if(hasHP){
+        entry.hp = col.HighPrecision.Spans.map(arr => (arr||[]).map(spanToArr));
+      }
+      columns.push(entry);
+    }
+  }
+
+  const ui = {
+    mapW: state.map.widthM,
+    mapH: state.map.heightM,
+    algo: el('algo').value,
+    w1: parseFloat(el('w1').value||'2'),
+    w2: parseFloat(el('w2').value||'1.5'),
+    w1All: el('w1All').checked,
+    speed: parseInt(el('speed').value||'30',10),
+    costM: parseFloat(el('costM').value||'1'),
+    costN: parseFloat(el('costN').value||'1'),
+    agentH: parseFloat(el('agentH').value||'1.1'),
+    stepUp: parseFloat(el('stepUp').value||'1.1'),
+    stepDown: parseFloat(el('stepDown').value||'3276.75'),
+    banTex: el('banTex').value,
+    ignoreTex: el('ignoreTex').value,
+    endYMode: el('endYMode').value,
+    startY: parseFloat(el('startY').value||'0'),
+    goalY: parseFloat(el('goalY').value||'0'),
+    tool: state.tool,
+    brush: state.brush,
+    terrainH: parseFloat(el('terrainH').value||'0'),
+    terrainTex: parseInt(el('terrainTex').value||'1',10)||1,
+    blkMin: parseFloat(el('blkMin').value||'0'),
+    blkMax: parseFloat(el('blkMax').value||'2'),
+    blkTex: parseInt(el('blkTex').value||'3',10)||3,
+  };
+
+  return {
+    version: 1,
+    ui,
+    map: {widthM: state.map.widthM, heightM: state.map.heightM, columns},
+    start: {...state.start},
+    goal:  {...state.goal},
+    camera: {yaw: camera.yaw, pitch: camera.pitch, dist: camera.dist, target: {...camera.target}},
+  };
+}
+
+function applyImportData(data){
+  if(!data || !data.map) throw new Error('???????');
+  stopRun();
+
+  const wRaw = (data.map.widthM ?? data.ui?.mapW ?? 32);
+  const hRaw = (data.map.heightM ?? data.ui?.mapH ?? 32);
+  let w = clamp(parseInt(wRaw,10) || 32, 32, 512);
+  let h = clamp(parseInt(hRaw,10) || 32, 32, 512);
+  w = Math.round(w/32)*32;
+  h = Math.round(h/32)*32;
+  el('mapW').value = w;
+  el('mapH').value = h;
+
+  state.map = new MapData(w,h);
+
+  const cols = Array.isArray(data.map.columns) ? data.map.columns : [];
+  for(const c of cols){
+    if(c == null) continue;
+    const mx = c.mx|0, mz = c.mz|0;
+    if(mx<0||mz<0||mx>=state.map.widthM||mz>=state.map.heightM) continue;
+    const col = state.map.space.GetOrCreateColumnByMeter(mx, mz);
+    if(!col) continue;
+    col.Terrain = arrToSpan(c.terrain || [0,0,1]);
+
+    if(Array.isArray(c.hp)){
+      col.HighPrecision = new HighPrecisionColumn();
+      for(let gi=0;gi<16;gi++){
+        const arr = c.hp[gi] || [];
+        col.HighPrecision.Spans[gi] = arr.map(arrToSpan);
+        col.HighPrecision.Spans[gi].sort((a,b)=> (a.MaxY-b.MaxY) || (a.MinY-b.MinY));
+      }
+      col.Other = null;
+      col.Mask = 0;
+    } else if(Array.isArray(c.other) && c.other.length){
+      col.Other = c.other.map(arrToSpan);
+      col.Other.sort((a,b)=> (a.MaxY-b.MaxY) || (a.MinY-b.MinY));
+      col.HighPrecision = null;
+      col.Mask = 2;
+    } else {
+      col.Other = null;
+      col.HighPrecision = null;
+      col.Mask = 1;
+    }
+  }
+
+  const ui = data.ui || {};
+  if(ui.algo) el('algo').value = ui.algo;
+  if(ui.w1 != null) el('w1').value = ui.w1;
+  if(ui.w2 != null) el('w2').value = ui.w2;
+  if(ui.w1All != null) el('w1All').checked = !!ui.w1All;
+  if(ui.speed != null) el('speed').value = ui.speed;
+  if(ui.costM != null) el('costM').value = ui.costM;
+  if(ui.costN != null) el('costN').value = ui.costN;
+  if(ui.agentH != null) el('agentH').value = ui.agentH;
+  if(ui.stepUp != null) el('stepUp').value = ui.stepUp;
+  if(ui.stepDown != null) el('stepDown').value = ui.stepDown;
+  if(ui.banTex != null) el('banTex').value = ui.banTex;
+  if(ui.ignoreTex != null) el('ignoreTex').value = ui.ignoreTex;
+  if(ui.endYMode) el('endYMode').value = ui.endYMode;
+  if(ui.startY != null) el('startY').value = ui.startY;
+  if(ui.goalY != null) el('goalY').value = ui.goalY;
+  if(ui.terrainH != null) el('terrainH').value = ui.terrainH;
+  if(ui.terrainTex != null) el('terrainTex').value = ui.terrainTex;
+  if(ui.blkMin != null) el('blkMin').value = ui.blkMin;
+  if(ui.blkMax != null) el('blkMax').value = ui.blkMax;
+  if(ui.blkTex != null) el('blkTex').value = ui.blkTex;
+  if(ui.brush != null){
+    state.brush = ui.brush|0;
+    el('brush').value = state.brush;
+  }
+  if(ui.tool) setTool(ui.tool);
+
+  if(data.start){
+    state.start = {x:data.start.x|0, z:data.start.z|0, y:data.start.y|0};
+  } else {
+    state.start = {x:2, z:2, y:mToU(parseFloat(el('startY').value||'0'))};
+  }
+  if(data.goal){
+    state.goal = {x:data.goal.x|0, z:data.goal.z|0, y:data.goal.y|0};
+  } else {
+    state.goal = {x: state.map.widthFine-6, z: state.map.heightFine-6, y:mToU(parseFloat(el('goalY').value||'0'))};
+  }
+
+  // clamp start/goal to bounds
+  state.start.x = clamp(state.start.x, 0, state.map.widthFine-2);
+  state.start.z = clamp(state.start.z, 0, state.map.heightFine-2);
+  state.goal.x  = clamp(state.goal.x,  0, state.map.widthFine-2);
+  state.goal.z  = clamp(state.goal.z,  0, state.map.heightFine-2);
+
+  el('startY').value = uToM(state.start.y).toFixed(2);
+  el('goalY').value  = uToM(state.goal.y).toFixed(2);
+  const auto = el('endYMode').value === 'auto';
+  el('startY').disabled = auto;
+  el('goalY').disabled = auto;
+
+  if(data.camera){
+    if(typeof data.camera.yaw === 'number') camera.yaw = data.camera.yaw;
+    if(typeof data.camera.pitch === 'number') camera.pitch = data.camera.pitch;
+    if(typeof data.camera.dist === 'number') camera.dist = data.camera.dist;
+    if(data.camera.target){
+      camera.target = {
+        x: +data.camera.target.x || 0,
+        y: +data.camera.target.y || 0,
+        z: +data.camera.target.z || 0,
+      };
+    }
+  } else {
+    resetCameraTarget();
+  }
+
+  state.sel.valid = false;
+  updateInspect();
+  state.solver=null;
+  state.lastMsg='????????';
+  updateStat();
+  render();
+}
+
 
 el('endYMode').addEventListener('change', syncEndpointYUI);
 el('startY').addEventListener('input', ()=>{
