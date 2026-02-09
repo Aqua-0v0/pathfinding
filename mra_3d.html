@@ -1,0 +1,2212 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MRA* 3D / A* 3D 体素寻路可视化（0.25m 网格）</title>
+  <style>
+    :root{
+      --bg:#0b0d10; --panel:#12161c; --text:#e6e8eb; --muted:#9aa4af; --line:#222a35;
+      --accent:#2a7bd6; --warn:#d66f2a;
+    }
+    html,body{height:100%;}
+    body{margin:0; background:var(--bg); color:var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;}
+    .wrap{display:grid; grid-template-columns: 380px 1fr; gap:14px; padding:14px; box-sizing:border-box; height:100%;}
+    .panel{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px; overflow:auto;}
+    .panel h1{font-size:16px; margin:0 0 10px;}
+    .panel h2{font-size:13px; margin:16px 0 8px; color:var(--muted); font-weight:600; letter-spacing:.2px;}
+    .row{display:flex; gap:10px; align-items:center; margin:10px 0;}
+    .row label{font-size:12px; color:var(--muted); width:140px; flex:0 0 auto;}
+    .row input[type="number"], .row input[type="text"], .row select{
+      flex:1; background:#0f1318; color:var(--text); border:1px solid var(--line); border-radius:10px; padding:8px 10px;
+    }
+    .row input[type="range"]{flex:1;}
+    .row .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}
+    .btns{display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px;}
+    button{
+      background:#1a2230; color:var(--text); border:1px solid var(--line); border-radius:12px; padding:10px; cursor:pointer;
+    }
+    button:hover{filter:brightness(1.08);}
+    button:disabled{opacity:.5; cursor:not-allowed;}
+    .hint{font-size:12px; color:var(--muted); line-height:1.4;}
+    .stat{
+      font-size:12px; white-space:pre-wrap; color:var(--text);
+      background:#0f1318; border:1px solid var(--line); border-radius:12px; padding:10px;
+    }
+    .view{
+      background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:10px;
+      display:flex; flex-direction:column; gap:10px;
+    }
+    .topbar{display:flex; align-items:center; justify-content:space-between; gap:10px;}
+    .badge{font-size:12px; color:var(--muted);}
+    .legend{display:flex; flex-wrap:wrap; gap:8px; font-size:12px; color:var(--muted);}
+    .chip{display:flex; align-items:center; gap:6px;}
+    .sw{width:12px; height:12px; border-radius:4px; border:1px solid #2b3442;}
+    canvas{background:#0f1318; border-radius:12px; width:100%; height:100%; display:block; touch-action:none;}
+    .toolbar{
+      display:flex; flex-wrap:wrap; gap:8px;
+    }
+    .tool{
+      padding:8px 10px; font-size:12px; border-radius:999px;
+      background:#0f1318; border:1px solid var(--line); color:var(--text);
+      cursor:pointer; user-select:none;
+    }
+    .tool.active{outline:2px solid rgba(42,123,214,.55); border-color:#2a7bd6;}
+    .tool small{color:var(--muted); font-size:11px;}
+    details{border:1px solid var(--line); border-radius:12px; padding:10px; background:#0f1318;}
+    details summary{cursor:pointer; color:var(--text);}
+    .kv{display:grid; grid-template-columns: 1fr auto; gap:6px 10px; font-size:12px; color:var(--muted); margin-top:8px;}
+    .kv div:nth-child(2n){text-align:right; color:var(--text);}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="panel">
+    <h1>MRA* 3D / A* 3D 体素寻路可视化（0.25m 网格）</h1>
+
+    <h2>地图 / 数据结构</h2>
+    <div class="row">
+      <label>地图大小 X (m)</label>
+      <input id="mapW" type="number" min="32" step="32" value="32">
+    </div>
+    <div class="row">
+      <label>地图大小 Z (m)</label>
+      <input id="mapH" type="number" min="32" step="32" value="32">
+    </div>
+    <div class="hint">说明：每 1m×1m 有 4×4=16 个子格（0.25m）。Chunk 为 32m×32m（与 Go 版一致）。</div>
+
+    <h2>编辑工具</h2>
+    <div class="toolbar" id="toolbar">
+      <div class="tool active" data-tool="terrain">地形 <small>(1m 低精)</small></div>
+      <div class="tool" data-tool="blockLP">阻挡 <small>(1m 低精)</small></div>
+      <div class="tool" data-tool="blockHP">阻挡 <small>(0.25m 高精)</small></div>
+      <div class="tool" data-tool="erase">擦除 <small>(清阻挡)</small></div>
+      <div class="tool" data-tool="start">起点</div>
+      <div class="tool" data-tool="goal">终点</div>
+      <div class="tool" data-tool="inspect">查看</div>
+    </div>
+
+    <div class="row">
+      <label>刷子半径</label>
+      <select id="brush">
+        <option value="0">0（单格）</option>
+        <option value="1" selected>1</option>
+        <option value="2">2</option>
+        <option value="4">4</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label>Terrain 高度 (m)</label>
+      <input id="terrainH" type="number" min="0" max="30" step="0.05" value="0.00">
+    </div>
+    <div class="row">
+      <label>Terrain Texture</label>
+      <input id="terrainTex" type="number" min="0" step="1" value="1">
+    </div>
+
+    <div class="row">
+      <label>阻挡 MinY (m)</label>
+      <input id="blkMin" type="number" min="0" max="200" step="0.05" value="0.00">
+    </div>
+    <div class="row">
+      <label>阻挡 MaxY (m)</label>
+      <input id="blkMax" type="number" min="0" max="200" step="0.05" value="2.00">
+    </div>
+    <div class="row">
+      <label>阻挡 Texture</label>
+      <input id="blkTex" type="number" min="0" step="1" value="3">
+    </div>
+    <div class="hint">阻挡 Span：表示 [MinY, MaxY] 都是阻挡。Y 精度 0.05m（与 Go 版一致）。</div>
+
+    <h2>寻路参数</h2>
+    <div class="row">
+      <label>算法</label>
+      <select id="algo">
+        <option value="astar">A*</option>
+        <option value="mra" selected>MRA*</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>w1 (WA*)</label>
+      <input id="w1" type="number" min="1" max="10" step="0.1" value="2.0">
+    </div>
+    <div class="row">
+      <label>w1 作用队列</label>
+      <label style="width:auto; display:flex; gap:8px; align-items:center;">
+        <input id="w1All" type="checkbox" checked> 所有队列
+      </label>
+    </div>
+    <div class="row">
+      <label>w2 (gate)</label>
+      <input id="w2" type="number" min="1" max="10" step="0.1" value="1.5">
+    </div>
+    <div class="row">
+      <label>速度 (step/s)</label>
+      <input id="speed" type="range" min="1" max="120" value="30">
+    </div>
+    <div class="row">
+      <label>代价系数 m</label>
+      <input id="costM" type="number" min="0" step="0.1" value="1.0">
+    </div>
+    <div class="row">
+      <label>代价系数 n</label>
+      <input id="costN" type="number" min="0" step="0.1" value="1.0">
+    </div>
+
+    <div class="row">
+      <label>体型 (固定)</label>
+      <div class="hint" style="flex:1">x,z 占用 2×2 子格（0.5m×0.5m）</div>
+    </div>
+    <div class="row">
+      <label>物体高度 (m)</label>
+      <input id="agentH" type="number" min="0.3" max="5" step="0.05" value="1.10">
+    </div>
+    <div class="row">
+      <label>可上台阶 (m)</label>
+      <input id="stepUp" type="number" min="0" max="5" step="0.05" value="1.10">
+    </div>
+    <div class="row">
+      <label>可下落差 (m)</label>
+      <input id="stepDown" type="number" min="0" max="3276.75" step="0.05" value="3276.75">
+    </div>
+
+    <div class="row">
+      <label>禁止落脚 Texture</label>
+      <input id="banTex" class="mono" type="text" value="2">
+    </div>
+    <div class="row">
+      <label>可忽略阻挡 Texture</label>
+      <input id="ignoreTex" class="mono" type="text" value="0">
+    </div>
+
+    <div class="hint">
+      Texture 说明：Texture 是 bitmask（可用逗号分隔多个值，会按 OR 合并）。例如 <span class="mono">2,8,16</span>。<br/>
+      • 禁止落脚 Texture：与落脚点 Texture 做 <span class="mono">&amp;</span>，非 0 则禁止落脚。<br/>
+      • 可忽略阻挡 Texture：与 Span.Texture 做 <span class="mono">&amp;</span>，非 0 则该 Span 直接忽略（不参与阻挡判断）。
+    </div>
+
+    <h2>起点 / 终点</h2>
+    <div class="row">
+      <label>端点 Y 模式</label>
+      <select id="endYMode">
+        <option value="auto" selected>自动（吸附落脚点）</option>
+        <option value="manual">手动（使用输入 Y）</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>起点 Y (m)</label>
+      <input id="startY" type="number" min="0" max="2000" step="0.05" value="0.00">
+    </div>
+    <div class="row">
+      <label>终点 Y (m)</label>
+      <input id="goalY" type="number" min="0" max="2000" step="0.05" value="0.00">
+    </div>
+    <div class="hint">自动模式：点击起点/终点只设置 x,z，y 会自动选择该 footprint 内“最低可落脚点”；手动模式：使用输入 y（若在阻挡里/高度不足会直接失败）。</div>
+
+    <h2>运行控制</h2>
+    <div class="btns">
+      <button id="reset">重置</button>
+      <button id="clear">清空阻挡</button>
+      <button id="step">单步</button>
+      <button id="run">开始</button>
+      <button id="pause" disabled>暂停</button>
+      <button id="finish">跑到结束</button>
+    </div>
+
+    <div style="height:10px"></div>
+    <div class="stat" id="stat">状态：未开始</div>
+
+    <div style="height:10px"></div>
+    <details>
+      <summary>选中单元信息 / Span 列表</summary>
+      <div class="hint">在“查看”工具下点击地面可选中单元；或在任意工具下按住 <span class="mono">Ctrl</span> 点击。</div>
+      <div class="kv" id="inspect"></div>
+    </details>
+
+    <div style="height:10px"></div>
+    <div class="hint">
+      交互：<br/>
+      • 左键：按当前工具绘制（拖拽连续绘制）<br/>
+      • 右键拖拽：旋转相机 &nbsp; • 中键拖拽：平移 &nbsp; • 滚轮：缩放<br/>
+      • Ctrl+左键：查看单元 Span<br/>
+    </div>
+
+  </div>
+
+  <div class="view">
+    <div class="topbar">
+      <div class="badge">3D 视图（Canvas 软渲染）</div>
+      <div class="legend">
+        <div class="chip"><span class="sw" style="background:#2a7bd6"></span> 起点</div>
+        <div class="chip"><span class="sw" style="background:#d66f2a"></span> 终点</div>
+        <div class="chip"><span class="sw" style="background:#2a1b3b"></span> PATH</div>
+        <div class="chip"><span class="sw" style="background:#1b3b22"></span> OPEN</div>
+        <div class="chip"><span class="sw" style="background:#3b2b1b"></span> CLOSED</div>
+        <div class="chip"><span class="sw" style="background:#263241"></span> 阻挡</div>
+      </div>
+    </div>
+    <canvas id="cv"></canvas>
+  </div>
+</div>
+
+<script>
+/* =========================================================================================
+   3D MRA* / A* Visualizer (single-file, no external libs)
+   - Grid: 0.25m (4x4 per 1m cell)
+   - Terrain: always low precision (1m), MinY=0
+   - Obstacles: low precision (1m) or high precision (0.25m)
+   - Footprint: fixed 2x2 subcells (0.5m x 0.5m)
+   - Connectivity: 8-connected in x,z (per Go comment)
+   ========================================================================================= */
+
+// =============================== Constants & Helpers ===============================
+const CELL = 0.25;          // meters per subcell
+const SUB = 4;              // subcells per meter (x,z)
+const FAST_GRID_SET_SIZE = 32; // Chunk size in meters (as Go)
+
+const clamp = (v,a,b)=>Math.max(a, Math.min(b,v));
+const lerp = (a,b,t)=>a+(b-a)*t;
+
+const mToU = (m)=>{ // meters -> uint16 units (0.05m per unit)
+  // allow large values for debugging; keep within uint16 range
+  const u = Math.round(m / 0.05);
+  return clamp(u, 0, 65535) | 0;
+};
+const uToM = (u)=> (u * 0.05);
+
+// parse comma-separated integers into a single bitmask (OR)
+// 例："2,8,16" => 2|8|16
+function parseTexMask(str){
+  const s = (str||'').trim();
+  if(!s) return 0;
+  let mask = 0;
+  for(const part of s.split(',')){
+    const t = part.trim();
+    if(!t) continue;
+    const n = Number(t);
+    if(Number.isFinite(n)) mask |= (n|0);
+  }
+  return mask|0;
+}
+
+// =============================== Go-like Data Structures ===============================
+// Span: blocking interval [MinY, MaxY] with Texture
+class Span {
+  constructor(minY=0, maxY=0, texture=0){
+    this.MinY = minY|0;
+    this.MaxY = maxY|0;
+    this.Texture = texture|0;
+  }
+}
+
+// HighPrecisionColumn: per subcell spans (16 entries)
+class HighPrecisionColumn {
+  constructor(){
+    // Spans[gridIndex] = Span[]
+    this.Spans = Array.from({length:16}, ()=>[]);
+  }
+}
+
+// Column: 1m x 1m cell
+// Mask bits (as Go comment):
+//  bit0: ColumnIsTerrain (only terrain)
+//  bit1: ColumnIsLowPrecision (terrain + Other)
+class Column {
+  constructor(){
+    this.Mask = 1; // terrain-only by default
+    this.Terrain = new Span(0, 0, 1); // default height 0, texture 1
+    this.Other = null;               // Span[] (low precision obstacles)
+    this.HighPrecision = null;       // HighPrecisionColumn
+  }
+  ColumnIsTerrain(){ return (this.Mask & 1) > 0; }
+  ColumnIsLowPrecision(){ return (this.Mask & 2) > 0; }
+
+  // Return [terrainSpan, obstacleSpans] for a PointForSearchPath
+  GetSpans(p){
+    if(this.ColumnIsTerrain()){
+      return [this.Terrain, []];
+    }
+    if(this.ColumnIsLowPrecision()){
+      return [this.Terrain, (this.Other||[])];
+    }
+    // High precision:
+    const idx = p.GridIndex|0;
+    const hp = this.HighPrecision;
+    if(!hp) return [this.Terrain, []];
+    return [this.Terrain, (hp.Spans[idx]||[])];
+  }
+}
+
+// Chunk: 32m x 32m columns => 32*32 entries
+class Chunk {
+  constructor(){
+    this.cols = Array.from({length:FAST_GRID_SET_SIZE*FAST_GRID_SET_SIZE}, ()=> new Column());
+  }
+}
+
+// Space: chunked map
+class Space {
+  constructor(){
+    this.Map = []; // Chunk[] | null entries
+    this.minX = 0;
+    this.minZ = 0;
+    this.width = 0;  // chunks in x
+    this.height = 0; // chunks in z
+    this.spaceWidth = 0;  // meters
+    this.spaceHeight = 0; // meters
+  }
+
+  InitWidthAndHeight(spaceWidth, spaceHeight){
+    // spaceWidth/Height must be multiple of 32m (per Go comment)
+    this.spaceWidth = spaceWidth|0;
+    this.spaceHeight = spaceHeight|0;
+    this.width = Math.ceil(spaceWidth / FAST_GRID_SET_SIZE);
+    this.height = Math.ceil(spaceHeight / FAST_GRID_SET_SIZE);
+    const n = this.width * this.height;
+    this.Map = Array.from({length:n}, ()=> null);
+  }
+
+  _chunkIndex(mx, mz){
+    const x = (mx|0) - this.minX;
+    const z = (mz|0) - this.minZ;
+    const cx = (x / FAST_GRID_SET_SIZE) | 0;
+    const cz = (z / FAST_GRID_SET_SIZE) | 0;
+    return cx + cz * this.width;
+  }
+
+  _colIndexInChunk(mx, mz){
+    const x = (mx|0) - this.minX;
+    const z = (mz|0) - this.minZ;
+    const ox = x & (FAST_GRID_SET_SIZE - 1); // because 32 is power of 2
+    const oz = z & (FAST_GRID_SET_SIZE - 1);
+    return ox + oz * FAST_GRID_SET_SIZE;
+  }
+
+  GetColumnByMeter(mx, mz){
+    const idx = this._chunkIndex(mx, mz);
+    if(idx < 0 || idx >= this.Map.length) return [null, false];
+    const ch = this.Map[idx];
+    if(!ch) return [null, false];
+    const ci = this._colIndexInChunk(mx, mz);
+    return [ch.cols[ci], true];
+  }
+
+  GetOrCreateColumnByMeter(mx, mz){
+    const idx = this._chunkIndex(mx, mz);
+    if(idx < 0 || idx >= this.Map.length) return null;
+    if(!this.Map[idx]) this.Map[idx] = new Chunk();
+    const ch = this.Map[idx];
+    const ci = this._colIndexInChunk(mx, mz);
+    return ch.cols[ci];
+  }
+}
+
+// PointForSearchPath: subcell-based node, with y in 0.05m units
+class PointForSearchPath {
+  constructor(xMeters, zMeters, xOff, zOff, yUnits){
+    this.X = xMeters|0;
+    this.Z = zMeters|0;
+    this.Y = yUnits|0;
+    this.XOffSet = xOff|0; // 0..3
+    this.ZOffSet = zOff|0; // 0..3
+    this.GridIndex = 0;
+    this.CalcGridIndex();
+  }
+  CalcGridIndex(){
+    this.GridIndex = (this.XOffSet * 4 + this.ZOffSet) | 0;
+  }
+}
+
+// =============================== Map Wrapper (fine-grid access) ===============================
+class MapData {
+  constructor(widthM=32, heightM=32){
+    this.space = new Space();
+    this.resize(widthM, heightM);
+  }
+
+  resize(widthM, heightM){
+    this.widthM = widthM|0;
+    this.heightM = heightM|0;
+    this.widthFine = this.widthM * SUB;
+    this.heightFine = this.heightM * SUB;
+    this.space = new Space();
+    this.space.InitWidthAndHeight(this.widthM, this.heightM);
+    // Lazily allocate chunks on edit (to keep it light).
+  }
+
+  inFineBounds(xi, zi){
+    return xi>=0 && zi>=0 && xi < this.widthFine && zi < this.heightFine;
+  }
+
+  // fine (0.25m) -> (meter + offsets)
+  _fineToPoint(xi, zi, yUnits){
+    const xm = (xi / SUB) | 0;
+    const zm = (zi / SUB) | 0;
+    const xo = xi & (SUB-1);
+    const zo = zi & (SUB-1);
+    return new PointForSearchPath(xm, zm, xo, zo, yUnits);
+  }
+
+  getSpansAtFine(xi, zi, yUnits){
+    if(!this.inFineBounds(xi,zi)) return [null, null];
+    const p = this._fineToPoint(xi, zi, yUnits|0);
+    const [col, ok] = this.space.GetColumnByMeter(p.X, p.Z);
+    if(!ok || !col){
+      // Unallocated columns are "default terrain only": height 0, texture 1
+      const terrain = new Span(0, 0, 1);
+      return [terrain, []];
+    }
+    return col.GetSpans(p);
+  }
+
+  // Ensure column exists and return it.
+  getOrCreateColumnAtFine(xi, zi){
+    const xm = (xi / SUB) | 0;
+    const zm = (zi / SUB) | 0;
+    if(xm<0||zm<0||xm>=this.widthM||zm>=this.heightM) return null;
+    return this.space.GetOrCreateColumnByMeter(xm, zm);
+  }
+
+  // Terrain editing (1m low precision)
+  setTerrainAtMeter(mx, mz, heightUnits, texture){
+    const col = this.space.GetOrCreateColumnByMeter(mx, mz);
+    if(!col) return;
+    col.Terrain = new Span(0, heightUnits|0, texture|0);
+
+    // Maintain mask: if no obstacles => terrain-only
+    if(col.HighPrecision){
+      // keep HP obstacles
+      col.Mask = 0;
+      return;
+    }
+    if(col.Other && col.Other.length){
+      col.Mask = 2;
+    } else {
+      col.Mask = 1;
+      col.Other = null;
+    }
+  }
+
+  // Low precision obstacle spans (1m)
+  addLowPrecisionSpanAtMeter(mx, mz, span){
+    const col = this.space.GetOrCreateColumnByMeter(mx, mz);
+    if(!col) return;
+    // 你补充的规则：
+    // - 1mx1m 中只要出现过任何高精阻挡（HighPrecision != nil），那么 Other 必须为 nil。
+    // - 之后即使再“低精方式”设置阻挡，也不能把列降回低精；
+    //   而是把这段 low-precision 的 span 复制写入 16 个子格（等价于“整格阻挡”）。
+    if(col.HighPrecision){
+      for(let i=0;i<16;i++){
+        col.HighPrecision.Spans[i].push(new Span(span.MinY, span.MaxY, span.Texture));
+        col.HighPrecision.Spans[i].sort((a,b)=> (a.MaxY-b.MaxY) || (a.MinY-b.MinY));
+      }
+      col.Other = null;
+      col.Mask = 0; // HP
+      return;
+    }
+
+    if(!col.Other) col.Other = [];
+    col.Other.push(span);
+    col.Other.sort((a,b)=> (a.MaxY-b.MaxY) || (a.MinY-b.MinY));
+    col.Mask = 2;
+  }
+
+  // High precision obstacle spans (0.25m)
+  addHighPrecisionSpanAtFine(xi, zi, span){
+    const col = this.getOrCreateColumnAtFine(xi,zi);
+    if(!col) return;
+    // Ensure HP mode
+    if(!col.HighPrecision){
+      col.HighPrecision = new HighPrecisionColumn();
+      // 如果此前是低精（Other 里有整格阻挡），需要把它们复制到 16 个子格里
+      if(col.Other && col.Other.length){
+        for(let i=0;i<16;i++){
+          for(const s of col.Other){
+            col.HighPrecision.Spans[i].push(new Span(s.MinY, s.MaxY, s.Texture));
+          }
+          col.HighPrecision.Spans[i].sort((a,b)=> (a.MaxY-b.MaxY) || (a.MinY-b.MinY));
+        }
+      }
+    }
+    col.Other = null;
+    col.Mask = 0; // HP
+    const xo = xi & (SUB-1);
+    const zo = zi & (SUB-1);
+    const gi = (xo*4+zo)|0;
+    col.HighPrecision.Spans[gi].push(span);
+    col.HighPrecision.Spans[gi].sort((a,b)=> (a.MaxY-b.MaxY) || (a.MinY-b.MinY));
+  }
+
+  // Erase obstacles (LP or HP) at a specific fine cell.
+  eraseObstaclesAtFine(xi, zi, mode='auto'){
+    const col = this.getOrCreateColumnAtFine(xi,zi);
+    if(!col) return;
+
+    if(col.HighPrecision){
+      const xo = xi & (SUB-1);
+      const zo = zi & (SUB-1);
+      const gi = (xo*4+zo)|0;
+      col.HighPrecision.Spans[gi] = [];
+      // If all empty => downgrade to terrain-only (or LP if there is Other, but we keep none)
+      let any=false;
+      for(let i=0;i<16;i++){ if(col.HighPrecision.Spans[i].length){ any=true; break; } }
+      if(!any){
+        col.HighPrecision = null;
+        col.Mask = 1;
+        col.Other = null;
+      }
+      return;
+    }
+    // LP
+    col.Other = null;
+    col.Mask = 1;
+  }
+
+  clearAllObstacles(){
+    // Iterate all chunks and clear obstacles
+    for(let i=0;i<this.space.Map.length;i++){
+      const ch = this.space.Map[i];
+      if(!ch) continue;
+      for(const col of ch.cols){
+        col.Other = null;
+        col.HighPrecision = null;
+        col.Mask = 1;
+      }
+    }
+  }
+}
+
+// =============================== Collision / Landing Logic (3D) ===============================
+// GetInterval: returns first valid gap relative to current position.
+// Landing y is gap.MinY. If no gap, return null.
+function GetInterval(terrain, spans, curY, ignoreTexture, forbiddenTexture, height, upLimit, downLimit){
+  const n = spans.length;
+  const tMax = terrain.MaxY|0;
+  if(n === 0){
+    if(forbiddenTexture !== 0 && (terrain.Texture & forbiddenTexture) !== 0) return null;
+    if(tMax > curY + upLimit) return null;
+    if(tMax < curY - downLimit) return null;
+    return new Span(tMax, 65535, terrain.Texture|0);
+  }
+  const needTopY = curY + height;
+  const minAllowed = curY - downLimit;
+  const maxAllowed = curY + upLimit;
+
+  let gapMinY = tMax;
+  let gapTex = terrain.Texture|0;
+
+  for(const v of spans){
+    if(ignoreTexture !== 0 && (v.Texture & ignoreTexture) !== 0) continue;
+
+    if(v.MaxY <= gapMinY) continue;
+
+    if(v.MinY < gapMinY){
+      gapMinY = v.MaxY;
+      gapTex = v.Texture|0;
+      if(gapMinY > maxAllowed) break;
+      continue;
+    }
+
+    const gapMaxY = v.MinY;
+    if(gapMaxY - gapMinY >= height){
+      if(gapMaxY >= needTopY){
+        if(forbiddenTexture === 0 || (gapTex & forbiddenTexture) === 0){
+          if(gapMinY > maxAllowed) break;
+          if(gapMinY >= minAllowed){
+            return new Span(gapMinY, gapMaxY, gapTex);
+          }
+        }
+      }
+    }
+
+    gapMinY = v.MaxY;
+    gapTex = v.Texture|0;
+    if(gapMinY > maxAllowed) break;
+  }
+
+  const finalMax = 65535;
+  if(finalMax - gapMinY < height) return null;
+  if(finalMax < needTopY) return null;
+  if(forbiddenTexture !== 0 && (gapTex & forbiddenTexture) !== 0) return null;
+  if(gapMinY > maxAllowed || gapMinY < minAllowed) return null;
+  return new Span(gapMinY, finalMax, gapTex);
+}
+
+const footprintOffsets = [[0,0],[1,0],[0,1],[1,1]];
+
+function resolveFootprintAt(map, xi, zi, curY, params){
+  if(!map.inFineBounds(xi,zi) || !map.inFineBounds(xi+1,zi+1)) return {ok:false};
+  const gaps = [];
+  for(const [dx,dz] of footprintOffsets){
+    const [terrain, obs] = map.getSpansAtFine(xi+dx, zi+dz, curY);
+    if(!terrain) return {ok:false};
+    const gap = GetInterval(
+      terrain,
+      obs,
+      curY,
+      params.ignoreTexMask,
+      params.banTexMask,
+      params.agentHUnits,
+      params.stepUpUnits,
+      params.stepDownUnits
+    );
+    if(!gap) return {ok:false};
+    gaps.push(gap);
+  }
+  let landingY = gaps[0].MinY;
+  for(const g of gaps) landingY = Math.max(landingY, g.MinY);
+  if(landingY > curY + params.stepUpUnits) return {ok:false};
+  if(landingY < curY - params.stepDownUnits) return {ok:false};
+  for(const g of gaps){
+    if(landingY + params.agentHUnits > g.MaxY) return {ok:false};
+  }
+  return {ok:true, y: landingY};
+}
+
+// Check a move for a given step by simulating fine (1-subcell) increments.
+// Returns {y, cost} or null.
+function simulateMove(map, from, toX, toZ, step, params){
+  const dx = toX - from.x;
+  const dz = toZ - from.z;
+  const stepsCount = Math.max(Math.abs(dx), Math.abs(dz));
+  if(stepsCount===0) return null;
+
+  const sx = Math.sign(dx);
+  const sz = Math.sign(dz);
+  let cx = from.x|0;
+  let cz = from.z|0;
+  let cy = from.y|0;
+  let cost = 0;
+
+  for(let i=0;i<stepsCount;i++){
+    const nx = cx + sx;
+    const nz = cz + sz;
+    if(nx<0 || nz<0 || nx>=map.widthFine-1 || nz>=map.heightFine-1) return null;
+
+    const r = resolveFootprintAt(map, nx, nz, cy, params);
+    if(!r.ok) return null;
+
+    const ny = r.y|0;
+    const horiz = ((sx!==0 && sz!==0) ? Math.SQRT2 : 1) * CELL;
+    const vert = Math.abs(ny - cy) * 0.05;
+    cost += params.costM * horiz + params.costN * vert;
+
+    cx = nx; cz = nz; cy = ny;
+  }
+
+  return {y: cy, cost};
+}
+
+function heuristicCost(a, b, params){
+  const dx = (a.x - b.x) * CELL;
+  const dz = (a.z - b.z) * CELL;
+  const dy = (a.y - b.y) * 0.05;
+  return params.costM * Math.hypot(dx, dz) + params.costN * Math.abs(dy);
+}
+
+// =============================== A* / MRA* Solver (3D states: x,z,y) ===============================
+class MinHeap {
+  constructor(){ this.arr=[]; }
+  size(){ return this.arr.length; }
+  peek(){ return this.arr[0]; }
+  push(n){ this.arr.push(n); this._up(this.arr.length-1); }
+  pop(){
+    if(this.arr.length===0) return null;
+    const top=this.arr[0];
+    const last=this.arr.pop();
+    if(this.arr.length){ this.arr[0]=last; this._down(0); }
+    return top;
+  }
+  _up(i){
+    while(i>0){
+      const p=(i-1)>>1;
+      const A=this.arr[p], B=this.arr[i];
+      if(A.f < B.f || (A.f===B.f && A.g<=B.g)) break;
+      [this.arr[p],this.arr[i]]=[this.arr[i],this.arr[p]];
+      i=p;
+    }
+  }
+  _down(i){
+    const n=this.arr.length;
+    while(true){
+      let l=i*2+1, r=l+1, m=i;
+      const better=(a,b)=>{
+        const A=this.arr[a], B=this.arr[b];
+        return (A.f < B.f) || (A.f===B.f && A.g < B.g);
+      };
+      if(l<n && better(l,m)) m=l;
+      if(r<n && better(r,m)) m=r;
+      if(m===i) break;
+      [this.arr[m],this.arr[i]]=[this.arr[i],this.arr[m]];
+      i=m;
+    }
+  }
+}
+
+function key(step, x, z, y){ return `${step}|${x}|${z}|${y}`; }
+
+function neighborsXZ(x, z, step){
+  // 8-connected
+  const dirs = [
+    [ step, 0],[-step, 0],[0, step],[0,-step],
+    [ step, step],[ step,-step],[-step, step],[-step,-step]
+  ];
+  const out=[];
+  for(const [dx,dz] of dirs){
+    out.push({x:x+dx, z:z+dz, diag:(dx!==0 && dz!==0), dx, dz});
+  }
+  return out;
+}
+
+function coincideIndicesXZ(x,z, steps){
+  const idx=[];
+  for(let i=0;i<steps.length;i++){
+    const r=steps[i];
+    if((x%r===0) && (z%r===0)) idx.push(i);
+  }
+  return idx;
+}
+
+function makeSearch(step, weight){
+  return {
+    step, weight,
+    open: new MinHeap(),
+    g: new Map(),
+    closed: new Set(),
+    parent: new Map(),
+    expanded: 0,
+  };
+}
+
+function pushOrUpdate(search, node, g, parentKey, h){
+  const k = key(search.step, node.x, node.z, node.y);
+  const old = search.g.get(k);
+  if(old!==undefined && g>=old) return;
+  search.g.set(k,g);
+  search.parent.set(k,parentKey);
+  const f = g + search.weight*h;
+  search.open.push({x:node.x, z:node.z, y:node.y, g, h, f});
+}
+
+function reconstruct(search, goalKey){
+  const out=[];
+  let k = goalKey;
+  const seen=new Set();
+  while(k && !seen.has(k)){
+    seen.add(k);
+    const parts = k.split('|');
+    // parts: step|x|z|y
+    out.push({x:+parts[1], z:+parts[2], y:+parts[3]});
+    k = search.parent.get(k);
+  }
+  out.reverse();
+  return out;
+}
+
+function buildSolver(map, cfg){
+  const steps = cfg.algo==='mra' ? [1,2,4] : [1];
+  const anchorIdx = 0;
+  const searches = steps.map((r,i) => makeSearch(r, cfg.w1All ? cfg.w1 : (i===anchorIdx ? 1.0 : cfg.w1)));
+
+  const start = {...cfg.start}; // {x,z,y}
+  const goal  = {...cfg.goal};
+
+  // seed (for each resolution that aligns in x,z)
+  const initIdx = coincideIndicesXZ(start.x, start.z, steps);
+  for(const i of initIdx){
+    const s = searches[i];
+    const h = heuristicCost(start, goal, cfg.params);
+    pushOrUpdate(s, start, 0, null, h);
+  }
+
+  function chooseQueue(){
+    // Similar gate logic as the given 2D html: compare g+h vs w2*(anchor g+h)
+    const anchor = searches[anchorIdx];
+    if(anchor.open.size()===0) return anchorIdx;
+    const a = anchor.open.peek();
+    const anchorMin = a.g + a.h;
+
+    let best = anchorIdx;
+    let bestF = anchorMin;
+    if(searches.length>=2 && searches[2].open.size()!==0) {
+      for(let i=0;i<searches.length;i++){
+        if(i===anchorIdx) continue;
+        const s=searches[i];
+        if(s.open.size()===0) continue;
+        const n=s.open.peek();
+        const f=n.g + n.h;
+        if(f <= cfg.w2 * anchorMin){
+          if(best===anchorIdx || f<=bestF){
+            best=i; bestF=f;
+          }
+        }
+      }
+    }
+    return best;
+  }
+
+  let done=false;
+  let found=false;
+  let path=[];
+  let msg='';
+
+  function stepOnce(){
+    if(done) return {done,found,path,msg};
+
+    // all empty?
+    let any=false;
+    for(const s of searches){ if(s.open.size()>0){ any=true; break; } }
+    if(!any){ done=true; found=false; msg='OPEN 全空：无解'; return {done,found,path,msg}; }
+
+    const qi = (cfg.algo==='mra') ? chooseQueue() : 0;
+    const s = searches[qi];
+
+    let cur = s.open.pop();
+    while(cur){
+      const ck = key(s.step, cur.x, cur.z, cur.y);
+      if(!s.closed.has(ck)) break;
+      cur = s.open.pop();
+    }
+    if(!cur){ msg='当前队列为空（跳过）'; return {done,found,path,msg}; }
+
+    const ck = key(s.step, cur.x, cur.z, cur.y);
+    s.closed.add(ck);
+    s.expanded++;
+
+    // goal test (anchor only to match the 2D behavior)
+    if(qi===anchorIdx && cur.x===goal.x && cur.z===goal.z && cur.y===goal.y){
+      done=true; found=true;
+      path = reconstruct(s, ck);
+      msg='Anchor 到达终点：成功';
+      return {done,found,path,msg};
+    }
+
+    // expand neighbors
+    for(const nb of neighborsXZ(cur.x, cur.z, s.step)){
+      const nx = nb.x|0, nz = nb.z|0;
+      // bounds: footprint 2x2 => need +1
+      if(nx<0||nz<0||nx>=map.widthFine-1||nz>=map.heightFine-1) continue;
+
+      // simulate move by fine steps to respect stepUp/down & 3D clearance
+      const move = simulateMove(map, {x:cur.x,z:cur.z,y:cur.y}, nx, nz, s.step, cfg.params);
+      if(!move) continue;
+
+      const ny = move.y;
+      const nk = key(s.step, nx, nz, ny);
+      if(s.closed.has(nk)) continue;
+
+      const ng = cur.g + move.cost;
+      const h = heuristicCost({x:nx,z:nz,y:ny}, goal, cfg.params);
+      pushOrUpdate(s, {x:nx,z:nz,y:ny}, ng, ck, h);
+
+      // share seeds across resolutions if coincident in x,z
+      if(cfg.algo==='mra'){
+        const idxs = coincideIndicesXZ(nx, nz, steps);
+        for(const j of idxs){
+          if(j===qi) continue;
+          const sj = searches[j];
+          const jk = key(sj.step, nx, nz, ny);
+          if(sj.closed.has(jk)) continue;
+          pushOrUpdate(sj, {x:nx,z:nz,y:ny}, ng, ck, h);
+        }
+      }
+    }
+
+    msg = `扩展：Q${qi} (r=${s.step}, w=${s.weight}) @ (${cur.x},${cur.z}, y=${uToM(cur.y).toFixed(2)}m)`;
+    return {done,found,path,msg};
+  }
+
+  return {
+    steps, searches, stepOnce,
+    get done(){return done;},
+    get found(){return found;},
+    get path(){return path;},
+  };
+}
+
+// =============================== 3D Renderer (Canvas 2D, perspective) ===============================
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+const el = id => document.getElementById(id);
+const statEl = el('stat');
+const inspEl = el('inspect');
+
+function resizeCanvas(){
+  const wrap = cv.parentElement;
+  const w = wrap.clientWidth;
+  const h = wrap.clientHeight;
+  cv.width = Math.floor(w * devicePixelRatio);
+  cv.height = Math.floor(h * devicePixelRatio);
+  cv.style.width = w+'px';
+  cv.style.height = h+'px';
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+}
+
+const camera = {
+  yaw: 0.9,
+  pitch: 0.55,
+  dist: 40,
+  target: {x: 0, y: 0, z: 0},
+  fov: Math.PI/3,
+};
+
+let __camBasisCache = null;
+function getCamBasis(){
+  if(__camBasisCache) return __camBasisCache;
+
+  const cy = Math.cos(camera.yaw), sy = Math.sin(camera.yaw);
+  const cp = Math.cos(camera.pitch), sp = Math.sin(camera.pitch);
+
+  // eye position (spherical around target)
+  const eye = {
+    x: camera.target.x + camera.dist * cp * cy,
+    y: camera.target.y + camera.dist * sp,
+    z: camera.target.z + camera.dist * cp * sy,
+  };
+
+  // forward points from eye to target
+  let fx = camera.target.x - eye.x;
+  let fy = camera.target.y - eye.y;
+  let fz = camera.target.z - eye.z;
+  const fl = Math.hypot(fx,fy,fz) || 1;
+  fx/=fl; fy/=fl; fz/=fl;
+
+  // world up
+  const ux0=0, uy0=1, uz0=0;
+
+  // right = normalize(cross(forward, up))
+  let rx = fy*uz0 - fz*uy0;
+  let ry = fz*ux0 - fx*uz0;
+  let rz = fx*uy0 - fy*ux0;
+  const rl = Math.hypot(rx,ry,rz) || 1;
+  rx/=rl; ry/=rl; rz/=rl;
+
+  // up = cross(right, forward)
+  const ux = ry*fz - rz*fy;
+  const uy = rz*fx - rx*fz;
+  const uz = rx*fy - ry*fx;
+
+  __camBasisCache = {eye, forward:{x:fx,y:fy,z:fz}, right:{x:rx,y:ry,z:rz}, up:{x:ux,y:uy,z:uz}};
+  return __camBasisCache;
+}
+function invalidateCamBasis(){ __camBasisCache = null; }
+
+
+
+function project(pt){
+  const W = cv.clientWidth, H = cv.clientHeight;
+  const aspect = W / H;
+  const {eye, forward, right, up} = getCamBasis();
+  const dx = pt.x - eye.x;
+  const dy = pt.y - eye.y;
+  const dz = pt.z - eye.z;
+
+  const cx = dx*right.x + dy*right.y + dz*right.z;
+  const cy = dx*up.x + dy*up.y + dz*up.z;
+  const cz = dx*forward.x + dy*forward.y + dz*forward.z;
+
+  if(cz <= 0.01) return null;
+
+  const f = 1 / Math.tan(camera.fov/2);
+  const xN = (cx * f / aspect) / cz;
+  const yN = (cy * f) / cz;
+
+  const sx = (xN * 0.5 + 0.5) * W;
+  const sy = (-yN * 0.5 + 0.5) * H;
+
+  return {x:sx, y:sy, z:cz};
+}
+
+function rayFromScreen(sx, sy){
+  const W = cv.clientWidth, H = cv.clientHeight;
+  const aspect = W / H;
+  const xN = (sx / W) * 2 - 1;
+  const yN = -((sy / H) * 2 - 1);
+
+  const {eye, forward, right, up} = getCamBasis();
+  const f = 1 / Math.tan(camera.fov/2);
+
+  // direction in world: forward + right*(xN*aspect/f) + up*(yN/f)
+  const dx = forward.x + right.x*(xN*aspect/f) + up.x*(yN/f);
+  const dy = forward.y + right.y*(xN*aspect/f) + up.y*(yN/f);
+  const dz = forward.z + right.z*(xN*aspect/f) + up.z*(yN/f);
+  const dl = Math.hypot(dx,dy,dz) || 1;
+  return {o:eye, d:{x:dx/dl, y:dy/dl, z:dz/dl}};
+}
+
+function intersectPlaneY0(ray){
+  const {o,d} = ray;
+  if(Math.abs(d.y) < 1e-6) return null;
+  const t = (0 - o.y) / d.y;
+  if(t <= 0) return null;
+  return {x:o.x + d.x*t, y:0, z:o.z + d.z*t, t};
+}
+
+// Ray hit test against a vertical span [minY, maxY] within current cell segment.
+// Returns hit t in world units or null.
+function raySpanHit(oY, dY, tEnter, tExit, minY, maxY){
+  if(tExit < tEnter) return null;
+  if(Math.abs(dY) < 1e-6){
+    if(oY >= minY && oY <= maxY) return tEnter;
+    return null;
+  }
+  const t1 = (minY - oY) / dY;
+  const t2 = (maxY - oY) / dY;
+  const entry = Math.min(t1, t2);
+  const exit = Math.max(t1, t2);
+  const tHit = Math.max(tEnter, entry);
+  if(tHit <= Math.min(tExit, exit)) return tHit;
+  return null;
+}
+
+// Raycast into grid columns to pick the first visible cell (terrain/obstacle surface).
+function raycastCell(ray){
+  const map = state.map;
+  if(!map) return null;
+  const {o,d} = ray;
+
+  let tMin = 0;
+  let tMax = Infinity;
+
+  // X slabs
+  if(Math.abs(d.x) < 1e-6){
+    if(o.x < 0 || o.x >= map.widthM) return null;
+  } else {
+    let tx1 = (0 - o.x) / d.x;
+    let tx2 = (map.widthM - o.x) / d.x;
+    if(tx1 > tx2) [tx1, tx2] = [tx2, tx1];
+    tMin = Math.max(tMin, tx1);
+    tMax = Math.min(tMax, tx2);
+  }
+
+  // Z slabs
+  if(Math.abs(d.z) < 1e-6){
+    if(o.z < 0 || o.z >= map.heightM) return null;
+  } else {
+    let tz1 = (0 - o.z) / d.z;
+    let tz2 = (map.heightM - o.z) / d.z;
+    if(tz1 > tz2) [tz1, tz2] = [tz2, tz1];
+    tMin = Math.max(tMin, tz1);
+    tMax = Math.min(tMax, tz2);
+  }
+
+  if(tMax < tMin || tMax <= 0) return null;
+  if(tMin < 0) tMin = 0;
+
+  // Start position at entry
+  let x = o.x + d.x * tMin;
+  let z = o.z + d.z * tMin;
+  let xi = Math.floor(x / CELL);
+  let zi = Math.floor(z / CELL);
+  xi = clamp(xi, 0, map.widthFine-1);
+  zi = clamp(zi, 0, map.heightFine-1);
+
+  const stepX = d.x > 0 ? 1 : (d.x < 0 ? -1 : 0);
+  const stepZ = d.z > 0 ? 1 : (d.z < 0 ? -1 : 0);
+
+  let tMaxX = Infinity, tMaxZ = Infinity;
+  let tDeltaX = Infinity, tDeltaZ = Infinity;
+
+  if(stepX !== 0){
+    const nextX = (xi + (stepX > 0 ? 1 : 0)) * CELL;
+    tMaxX = tMin + ((nextX - x) / d.x);
+    tDeltaX = CELL / Math.abs(d.x);
+  }
+  if(stepZ !== 0){
+    const nextZ = (zi + (stepZ > 0 ? 1 : 0)) * CELL;
+    tMaxZ = tMin + ((nextZ - z) / d.z);
+    tDeltaZ = CELL / Math.abs(d.z);
+  }
+
+  let t = tMin;
+  const oY = o.y;
+  const dY = d.y;
+
+  while(t <= tMax){
+    if(!map.inFineBounds(xi, zi)) break;
+
+    const tExit = Math.min(tMaxX, tMaxZ, tMax);
+    const [terrain, obs] = map.getSpansAtFine(xi, zi, 0);
+    if(terrain){
+      let bestT = null;
+      const trySpan = (minU, maxU)=>{
+        const minY = uToM(minU|0);
+        const maxY = uToM(maxU|0);
+        const hitT = raySpanHit(oY, dY, t, tExit, minY, maxY);
+        if(hitT == null) return;
+        if(bestT == null || hitT < bestT) bestT = hitT;
+      };
+
+      // Terrain is also blocking span
+      trySpan(terrain.MinY, terrain.MaxY);
+
+      if(obs && obs.length){
+        for(const sp of obs){
+          trySpan(sp.MinY, sp.MaxY);
+        }
+      }
+
+      if(bestT != null){
+        const hx = o.x + d.x * bestT;
+        const hz = o.z + d.z * bestT;
+        const hxi = clamp(Math.floor(hx / CELL), 0, map.widthFine-1);
+        const hzi = clamp(Math.floor(hz / CELL), 0, map.heightFine-1);
+        return {xi:hxi, zi:hzi, x:hx, z:hz, y:oY + dY * bestT, t:bestT};
+      }
+    }
+
+    if(tMaxX < tMaxZ){
+      xi += stepX;
+      t = tMaxX;
+      tMaxX += tDeltaX;
+    } else {
+      zi += stepZ;
+      t = tMaxZ;
+      tMaxZ += tDeltaZ;
+    }
+  }
+
+  return null;
+}
+
+// Simple color helpers
+function hexToRgb(hex){
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if(!m) return {r:255,g:255,b:255};
+  return {r:parseInt(m[1],16), g:parseInt(m[2],16), b:parseInt(m[3],16)};
+}
+function rgbToHex(r,g,b){
+  const to = (v)=> ('0'+clamp(v|0,0,255).toString(16)).slice(-2);
+  return '#'+to(r)+to(g)+to(b);
+}
+function shade(hex, k){
+  const c=hexToRgb(hex);
+  return rgbToHex(c.r*k, c.g*k, c.b*k);
+}
+
+// texture->color (extendable)
+function texColor(tex){
+  switch(tex|0){
+    case 1: return '#2c3a2c'; // terrain
+    case 2: return '#1f3a5a'; // water
+    case 3: return '#263241'; // wall
+    case 4: return '#5a3a1f'; // door/wood
+    default: return '#333a46';
+  }
+}
+
+// Collect faces for a box (top + 4 sides) and sort globally.
+function pushFace(faces, pts, color){
+  const c = {
+    x:(pts[0].x + pts[1].x + pts[2].x + pts[3].x) / 4,
+    y:(pts[0].y + pts[1].y + pts[2].y + pts[3].y) / 4,
+    z:(pts[0].z + pts[1].z + pts[2].z + pts[3].z) / 4,
+  };
+  const prc = project(c);
+  if(!prc) return;
+  faces.push({pts, color, depth: prc.z});
+}
+
+function collectBoxFaces(faces, x0, z0, sx, sz, y0, y1, baseColor){
+  const x1=x0+sx, z1=z0+sz;
+  const yb=y0, yt=y1;
+  const p000={x:x0,y:yb,z:z0}, p100={x:x1,y:yb,z:z0}, p010={x:x0,y:yt,z:z0}, p110={x:x1,y:yt,z:z0};
+  const p001={x:x0,y:yb,z:z1}, p101={x:x1,y:yb,z:z1}, p011={x:x0,y:yt,z:z1}, p111={x:x1,y:yt,z:z1};
+
+  pushFace(faces, [p010,p110,p111,p011], shade(baseColor,1.15)); // top
+  pushFace(faces, [p000,p001,p011,p010], shade(baseColor,0.92)); // left
+  pushFace(faces, [p100,p110,p111,p101], shade(baseColor,0.92)); // right
+  pushFace(faces, [p000,p100,p110,p010], shade(baseColor,0.82)); // front
+  pushFace(faces, [p001,p101,p111,p011], shade(baseColor,0.82)); // back
+}
+
+function drawFace(poly){
+  const pr = poly.pts.map(project).filter(Boolean);
+  if(pr.length !== 4) return;
+  ctx.beginPath();
+  ctx.moveTo(pr[0].x, pr[0].y);
+  for(let i=1;i<pr.length;i++) ctx.lineTo(pr[i].x, pr[i].y);
+  ctx.closePath();
+  ctx.fillStyle = poly.color;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+function occHasOverlap(occ, xi, zi, y0u, y1u){
+  const arr = occ.get(`${xi},${zi}`);
+  if(!arr) return false;
+  for(const it of arr){
+    const a0 = it[0], a1 = it[1];
+    if(a0 < y1u && a1 > y0u) return true; // overlap
+  }
+  return false;
+}
+
+function sideExposed(b, occ, side){
+  const xi0=b._xi0, zi0=b._zi0, sx=b._sxCells, sz=b._szCells, y0u=b._y0u, y1u=b._y1u;
+  if(side==='L'){
+    const x = xi0-1;
+    if(x < 0) return true;
+    for(let zi=zi0; zi<zi0+sz; zi++){
+      if(!occHasOverlap(occ, x, zi, y0u, y1u)) return true;
+    }
+    return false;
+  }
+  if(side==='R'){
+    const x = xi0+sx;
+    if(x >= state.map.widthFine) return true;
+    for(let zi=zi0; zi<zi0+sz; zi++){
+      if(!occHasOverlap(occ, x, zi, y0u, y1u)) return true;
+    }
+    return false;
+  }
+  if(side==='F'){
+    const z = zi0-1;
+    if(z < 0) return true;
+    for(let xi=xi0; xi<xi0+sx; xi++){
+      if(!occHasOverlap(occ, xi, z, y0u, y1u)) return true;
+    }
+    return false;
+  }
+  if(side==='B'){
+    const z = zi0+sz;
+    if(z >= state.map.heightFine) return true;
+    for(let xi=xi0; xi<xi0+sx; xi++){
+      if(!occHasOverlap(occ, xi, z, y0u, y1u)) return true;
+    }
+    return false;
+  }
+  return true;
+}
+
+function addEdge(edges, x, z, y0, y1){
+  if(y1 <= y0) return;
+  edges.push({x, z, y0, y1});
+}
+
+function collectObstacleEdges(b, occ, edges){
+  const x0=b.x, x1=b.x+b.sx, z0=b.z, z1=b.z+b.sz, y0=b.y0, y1=b.y1;
+  const L = sideExposed(b, occ, 'L');
+  const R = sideExposed(b, occ, 'R');
+  const F = sideExposed(b, occ, 'F');
+  const B = sideExposed(b, occ, 'B');
+
+  if(L || F) addEdge(edges, x0, z0, y0, y1);
+  if(R || F) addEdge(edges, x1, z0, y0, y1);
+  if(L || B) addEdge(edges, x0, z1, y0, y1);
+  if(R || B) addEdge(edges, x1, z1, y0, y1);
+}
+
+function mergeEdges(edges){
+  const map = new Map();
+  for(const e of edges){
+    const kx = Math.round(e.x * 1000);
+    const kz = Math.round(e.z * 1000);
+    const key = `${kx}|${kz}`;
+    let arr = map.get(key);
+    if(!arr){ arr = []; map.set(key, arr); }
+    arr.push([e.y0, e.y1]);
+  }
+  const out = [];
+  for(const [key, arr] of map){
+    arr.sort((a,b)=> a[0]-b[0]);
+    let cur = arr[0].slice();
+    for(let i=1;i<arr.length;i++){
+      const s = arr[i];
+      if(s[0] <= cur[1] + 1e-6){
+        cur[1] = Math.max(cur[1], s[1]);
+      } else {
+        const [kx,kz] = key.split('|').map(Number);
+        out.push({x:kx/1000, z:kz/1000, y0:cur[0], y1:cur[1]});
+        cur = s.slice();
+      }
+    }
+    const [kx,kz] = key.split('|').map(Number);
+    out.push({x:kx/1000, z:kz/1000, y0:cur[0], y1:cur[1]});
+  }
+  return out;
+}
+
+function drawLine3D(points, color, width=2){
+  const pr = points.map(project).filter(Boolean);
+  if(pr.length<2) return;
+  ctx.beginPath();
+  ctx.moveTo(pr[0].x, pr[0].y);
+  for(let i=1;i<pr.length;i++) ctx.lineTo(pr[i].x, pr[i].y);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.stroke();
+}
+
+function drawPoint3D(p, color, r=3){
+  const pr = project(p);
+  if(!pr) return;
+  ctx.beginPath();
+  ctx.arc(pr.x, pr.y, r, 0, Math.PI*2);
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+// =============================== App State ===============================
+const state = {
+  map: new MapData(32,32),
+  solver: null,
+  running: false,
+  timer: null,
+  lastMsg: '',
+  tool: 'terrain',
+  brush: 1,
+
+  // start/goal in fine indices & y units
+  start: {x: 2, z: 2, y: 0},
+  goal:  {x: 10, z: 10, y: 0},
+
+  // selection for inspect
+  sel: {xi:0, zi:0, mx:0, mz:0, gi:0, valid:false},
+};
+
+// Initialize camera target
+function resetCameraTarget(){
+  const w = state.map.widthM, h = state.map.heightM;
+  camera.target = {x: w/2, y: 0, z: h/2};
+  camera.dist = Math.max(w,h) * 1.4 + 10;
+}
+resetCameraTarget();
+
+// =============================== Inspect Panel ===============================
+function setSelectionFromFine(xi, zi){
+  const mx = (xi/SUB)|0;
+  const mz = (zi/SUB)|0;
+  const xo = xi & (SUB-1);
+  const zo = zi & (SUB-1);
+  const gi = (xo*4+zo)|0;
+  state.sel = {xi,zi,mx,mz,gi, valid:true};
+  updateInspect();
+}
+
+function updateInspect(){
+  const s = state.sel;
+  if(!s.valid){
+    inspEl.innerHTML = '<div class="hint">未选中</div>';
+    return;
+  }
+  // read column
+  const [col, ok] = state.map.space.GetColumnByMeter(s.mx, s.mz);
+  let kind = '未分配（默认 terrain-only）';
+  let terrain = new Span(0,0,1);
+  let obs = [];
+  if(ok && col){
+    terrain = col.Terrain;
+    if(col.ColumnIsTerrain()) kind='Terrain-only';
+    else if(col.ColumnIsLowPrecision()) kind='LowPrecision';
+    else kind='HighPrecision';
+    // build PointForSearchPath for this fine cell
+    const p = new PointForSearchPath(s.mx, s.mz, (s.xi&3), (s.zi&3), 0);
+    const got = col.GetSpans(p);
+    obs = got[1]||[];
+  }
+
+  const lines = [];
+  function kv(k,v){ lines.push(`<div>${k}</div><div>${v}</div>`); }
+  kv('选中 Fine', `(${s.xi}, ${s.zi})`);
+  kv('选中 Meter', `(${s.mx}, ${s.mz})`);
+  kv('GridIndex', `${s.gi}`);
+  kv('Column 类型', kind);
+  kv('Terrain', `[0, ${uToM(terrain.MaxY).toFixed(2)}] tex=${terrain.Texture}`);
+  kv('Obstacle 数', `${obs.length}`);
+  let html = lines.join('');
+  if(obs.length){
+    html += `<div style="grid-column:1/3; height:8px"></div>`;
+    html += `<div style="grid-column:1/3; color:var(--muted); font-size:12px">Obstacle Spans（本子格视角）</div>`;
+    for(let i=0;i<obs.length;i++){
+      const sp = obs[i];
+      html += `<div style="grid-column:1/3; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono','Courier New', monospace; font-size:12px; padding:6px 8px; border:1px solid var(--line); border-radius:10px; margin-top:6px; background:#0b0d10;">
+        #${i} [${uToM(sp.MinY).toFixed(2)}, ${uToM(sp.MaxY).toFixed(2)}] tex=${sp.Texture}
+      </div>`;
+    }
+  }
+  inspEl.innerHTML = html;
+}
+
+// =============================== Solver Config Builders ===============================
+function buildParams(){
+  const agentHUnits = mToU(parseFloat(el('agentH').value||'1.1'));
+  const stepUpUnits = mToU(parseFloat(el('stepUp').value||'1.1'));
+  const stepDownUnits = mToU(parseFloat(el('stepDown').value||'3276.75'));
+  const banTexMask = parseTexMask(el('banTex').value);
+  const ignoreTexMask = parseTexMask(el('ignoreTex').value);
+  const costM = parseFloat(el('costM').value||'1');
+  const costN = parseFloat(el('costN').value||'1');
+  const w1All = el('w1All').checked;
+
+  return {agentHUnits, stepUpUnits, stepDownUnits, banTexMask, ignoreTexMask, costM, costN, w1All};
+}
+
+// Determine a deterministic start/goal y by selecting the lowest feasible floor that has clearance
+function chooseInitialYAt(xi, zi, params){
+  // Use curY = 0 for ignore rule (no ignore effect), and no step constraints (set huge)
+  const p2 = {...params, stepUpUnits: 65535, stepDownUnits: 65535};
+  const r = resolveFootprintAt(state.map, xi, zi, 0, p2);
+  if(!r.ok) return null;
+  return r.y|0;
+}
+
+function rebuildSolver(){
+  const params = buildParams();
+
+  // Validate start/goal in-bounds
+  if(!state.map.inFineBounds(state.start.x,state.start.z) || !state.map.inFineBounds(state.start.x+1,state.start.z+1)){
+    state.lastMsg='起点越界（需要 2x2 footprint 空间）';
+    state.solver=null;
+    updateStat(); render();
+    return;
+  }
+  if(!state.map.inFineBounds(state.goal.x,state.goal.z) || !state.map.inFineBounds(state.goal.x+1,state.goal.z+1)){
+    state.lastMsg='终点越界（需要 2x2 footprint 空间）';
+    state.solver=null;
+    updateStat(); render();
+    return;
+  }
+
+  // 起点/终点 Y 选择：
+  // - 自动：按“最低可落脚点”吸附（方便快速摆放）
+  // - 手动：严格使用输入的 y；如果在阻挡里/净空不足则直接失败（符合你的要求）
+  const endYMode = el('endYMode').value;
+  if(endYMode === 'auto'){
+    const sy = chooseInitialYAt(state.start.x, state.start.z, params);
+    const gy = chooseInitialYAt(state.goal.x, state.goal.z, params);
+    if(sy == null || gy == null){
+      state.solver=null;
+      state.lastMsg='起点或终点无可落脚点';
+      updateStat(); render();
+      return;
+    }
+    state.start.y = sy;
+    state.goal.y  = gy;
+    // 让面板显示出当前吸附到的 y
+    el('startY').value = uToM(state.start.y).toFixed(2);
+    el('goalY').value  = uToM(state.goal.y).toFixed(2);
+  } else {
+    state.start.y = mToU(parseFloat(el('startY').value||'0'));
+    state.goal.y  = mToU(parseFloat(el('goalY').value||'0'));
+  }
+
+  // Validate pose at chosen y
+  const okS = resolveFootprintAt(state.map, state.start.x, state.start.z, state.start.y, params);
+  const okG = resolveFootprintAt(state.map, state.goal.x, state.goal.z, state.goal.y, params);
+  if(!okS.ok || okS.y !== state.start.y || !okG.ok || okG.y !== state.goal.y){
+    state.solver=null;
+    state.lastMsg='起点或终点无效：落脚点在阻挡内或高度不足';
+    updateStat(); render();
+    return;
+  }
+
+  const cfg = {
+    algo: el('algo').value,
+    w1: parseFloat(el('w1').value||'2'),
+    w1All: el('w1All').checked,
+    w2: parseFloat(el('w2').value||'1.5'),
+    start: {...state.start},
+    goal: {...state.goal},
+    params,
+  };
+
+  state.solver = buildSolver(state.map, cfg);
+  state.lastMsg='已初始化，等待开始';
+  updateStat();
+  render();
+}
+
+function stopRun(){
+  state.running=false;
+  if(state.timer) clearInterval(state.timer);
+  state.timer=null;
+  el('run').disabled=false;
+  el('pause').disabled=true;
+}
+
+function startRun(){
+  if(!state.solver) rebuildSolver();
+  if(!state.solver) return;
+  stopRun();
+  state.running=true;
+  el('run').disabled=true;
+  el('pause').disabled=false;
+  const tickMs = Math.floor(1000 / (+el('speed').value));
+  state.timer = setInterval(()=>{
+    if(!state.solver || state.solver.done){
+      stopRun(); updateStat(); render(); return;
+    }
+    const r = state.solver.stepOnce();
+    state.lastMsg = r.msg;
+    updateStat();
+    render();
+  }, tickMs);
+}
+
+function stepOnceUI(){
+  if(!state.solver) rebuildSolver();
+  if(!state.solver) return;
+  if(state.solver.done) return;
+  const r = state.solver.stepOnce();
+  state.lastMsg = r.msg;
+  updateStat();
+  render();
+}
+
+function runToFinish(){
+  if(!state.solver) rebuildSolver();
+  if(!state.solver) return;
+  stopRun();
+  let guard=0;
+  while(state.solver && !state.solver.done && guard<200000){
+    const r = state.solver.stepOnce();
+    state.lastMsg = r.msg;
+    guard++;
+  }
+  if(guard>=200000) state.lastMsg = 'Guard 达到上限，停止（可能无解或地图过大）';
+  updateStat();
+  render();
+}
+
+function resetAll(){
+  stopRun();
+  const w = clamp(parseInt(el('mapW').value||'32',10), 32, 512);
+  const h = clamp(parseInt(el('mapH').value||'32',10), 32, 512);
+
+  // enforce multiples of 32
+  const W = Math.round(w/32)*32;
+  const H = Math.round(h/32)*32;
+  el('mapW').value = W;
+  el('mapH').value = H;
+
+  state.map.resize(W,H);
+  resetCameraTarget();
+
+  // default start/goal
+  state.start = {x:2, z:2, y:0};
+  state.goal  = {x: state.map.widthFine-6, z: state.map.heightFine-6, y:0};
+
+  // 同步端点 Y（自动/手动模式）
+  // 注意：syncEndpointYUI 会刷新 UI，我们在其后再把状态文案改回“已重置”。
+  try { syncEndpointYUI(); } catch(_) {}
+
+  state.solver=null;
+  state.lastMsg='已重置';
+  resizeCanvas();
+  updateStat();
+  render();
+}
+
+function clearObstacles(){
+  stopRun();
+  state.map.clearAllObstacles();
+  state.solver=null;
+  state.lastMsg='已清空阻挡（保留地形）';
+  updateStat();
+  render();
+}
+
+// =============================== Stats / Rendering ===============================
+function updateStat(){
+  const algo = el('algo').value;
+  let txt='';
+  if(!state.solver){
+    txt = '状态：未开始\n' + (state.lastMsg||'');
+  } else {
+    const s = state.solver.searches;
+    const expanded = s.map(x=>x.expanded);
+    const openSizes = s.map(x=>x.open.size());
+    txt = `算法：${algo.toUpperCase()}  |  子格：0.25m  |  footprint：2×2\n` +
+          `Start: (${state.start.x},${state.start.z}, y=${uToM(state.start.y).toFixed(2)}m)\n` +
+          `Goal : (${state.goal.x},${state.goal.z}, y=${uToM(state.goal.y).toFixed(2)}m)\n` +
+          `Expanded per queue: [${expanded.join(', ')}]\n` +
+          `OPEN sizes: [${openSizes.join(', ')}]\n` +
+          `${state.lastMsg || ''}`;
+    if(state.solver.done){
+      txt += state.solver.found ? '\n结果：找到路径（紫色）' : '\n结果：无解';
+    }
+  }
+  statEl.textContent = txt;
+}
+
+// Build render lists from map + solver state
+function render(){
+  invalidateCamBasis();
+  const W = cv.clientWidth, H = cv.clientHeight;
+  ctx.clearRect(0,0,W,H);
+
+  // background
+  ctx.fillStyle = '#0f1318';
+  ctx.fillRect(0,0,W,H);
+
+  // Map extents (meters)
+  const mapW = state.map.widthM;
+  const mapH = state.map.heightM;
+
+  // Base ground plane (y=0)
+  const planePts = [
+    {x:0,y:0,z:0},
+    {x:mapW,y:0,z:0},
+    {x:mapW,y:0,z:mapH},
+    {x:0,y:0,z:mapH},
+  ].map(project).filter(Boolean);
+  if(planePts.length===4){
+    ctx.beginPath();
+    ctx.moveTo(planePts[0].x, planePts[0].y);
+    for(let i=1;i<4;i++) ctx.lineTo(planePts[i].x, planePts[i].y);
+    ctx.closePath();
+    ctx.fillStyle = '#0d1218';
+    ctx.fill();
+  }
+
+  // Grid lines on ground (adaptive)
+  let minor = 4;
+  const big = Math.max(mapW,mapH);
+  if(big <= 64) minor = 1;
+  else if(big <= 128) minor = 2;
+  else minor = 4;
+
+  // minor grid
+  ctx.globalAlpha = 0.28;
+  for(let x=0; x<=mapW; x+=minor){
+    drawLine3D([{x:x,y:0.01,z:0},{x:x,y:0.01,z:mapH}], 'rgba(27,34,48,1)', 1);
+  }
+  for(let z=0; z<=mapH; z+=minor){
+    drawLine3D([{x:0,y:0.01,z:z},{x:mapW,y:0.01,z:z}], 'rgba(27,34,48,1)', 1);
+  }
+
+  // chunk grid (32m)
+  ctx.globalAlpha = 0.55;
+  for(let x=0; x<=mapW; x+=32){
+    drawLine3D([{x:x,y:0.02,z:0},{x:x,y:0.02,z:mapH}], 'rgba(42,123,214,1)', 1.5);
+  }
+  for(let z=0; z<=mapH; z+=32){
+    drawLine3D([{x:0,y:0.02,z:z},{x:mapW,y:0.02,z:z}], 'rgba(42,123,214,1)', 1.5);
+  }
+  ctx.globalAlpha = 1;
+
+  // Collect boxes (terrain + obstacles) for depth sorting
+  const boxes = [];
+
+  // Terrain: 1m columns
+  // Only draw at meter resolution (since terrain always low precision by requirement)
+  for(let mz=0;mz<mapH;mz++){
+    for(let mx=0;mx<mapW;mx++){
+      // fetch column if exists; else default
+      const [col, ok] = state.map.space.GetColumnByMeter(mx,mz);
+      let terr = ok && col ? col.Terrain : new Span(0,0,1);
+      const hM = uToM(terr.MaxY|0);
+      if(hM<=0) continue; // flat ground -> skip height (still navigable)
+      const baseCol = texColor(terr.Texture|0);
+      boxes.push({
+        x:mx, z:mz, sx:1, sz:1,
+        y0:0, y1:hM,
+        color:baseCol,
+        kind:'terrain',
+      });
+    }
+  }
+
+  // Obstacles: iterate allocated chunks only
+  for(const ch of state.map.space.Map){
+    if(!ch) continue;
+    for(let idx=0; idx<ch.cols.length; idx++){
+      const col = ch.cols[idx];
+      // Determine meter coordinate inside chunk
+      // chunk origin is not stored; we approximate by scanning later via selection; simpler: compute via index
+      // We cannot know which chunk this column belongs to from here; so we skip direct iteration.
+      // Instead, we render obstacles by scanning meter cells and checking column kind (still OK for <= 256x256).
+    }
+  }
+
+  // For simplicity and correctness, render obstacles by scanning meter cells (same cost as terrain scan).
+  for(let mz=0;mz<mapH;mz++){
+    for(let mx=0;mx<mapW;mx++){
+      const [col, ok] = state.map.space.GetColumnByMeter(mx,mz);
+      if(!ok || !col) continue;
+      if(col.ColumnIsTerrain()) continue;
+
+      // low precision obstacles
+      if(col.ColumnIsLowPrecision()){
+        const spans = col.Other || [];
+        for(const sp of spans){
+          const y0=uToM(sp.MinY|0), y1=uToM(sp.MaxY|0);
+          boxes.push({x:mx,z:mz,sx:1,sz:1,y0,y1,color:texColor(sp.Texture|0), kind:'obstacle'});
+        }
+      } else {
+        // high precision: per subcell
+        const hp = col.HighPrecision;
+        if(!hp) continue;
+        for(let gi=0;gi<16;gi++){
+          const arr = hp.Spans[gi] || [];
+          if(!arr.length) continue;
+          const xo = (gi/4)|0; // XOffSet
+          const zo = gi & 3;   // ZOffSet
+          const x0 = mx + xo*CELL;
+          const z0 = mz + zo*CELL;
+          for(const sp of arr){
+            const y0=uToM(sp.MinY|0), y1=uToM(sp.MaxY|0);
+            boxes.push({x:x0,z:z0,sx:CELL,sz:CELL,y0,y1,color:texColor(sp.Texture|0), kind:'obstacle'});
+          }
+        }
+      }
+    }
+  }
+
+  // Collect faces and draw globally (prevents top faces from covering nearby sides)
+  const faces = [];
+  const occ = new Map(); // obstacle occupancy by fine cell + height range
+  for(const b of boxes){
+    collectBoxFaces(faces, b.x, b.z, b.sx, b.sz, b.y0, b.y1, b.color);
+    if(b.kind !== 'obstacle') continue;
+    const xi0 = Math.round(b.x / CELL);
+    const zi0 = Math.round(b.z / CELL);
+    const sxCells = Math.max(1, Math.round(b.sx / CELL));
+    const szCells = Math.max(1, Math.round(b.sz / CELL));
+    const y0u = Math.round(b.y0 / 0.05);
+    const y1u = Math.round(b.y1 / 0.05);
+    b._xi0 = xi0; b._zi0 = zi0; b._sxCells = sxCells; b._szCells = szCells; b._y0u = y0u; b._y1u = y1u;
+    for(let zi=zi0; zi<zi0+szCells; zi++){
+      for(let xi=xi0; xi<xi0+sxCells; xi++){
+        const key = `${xi},${zi}`;
+        let arr = occ.get(key);
+        if(!arr){ arr = []; occ.set(key, arr); }
+        arr.push([y0u, y1u]);
+      }
+    }
+  }
+  faces.sort((a,b)=> b.depth - a.depth);
+  for(const f of faces) drawFace(f);
+
+  // Emphasize obstacle vertical edges when camera is near top-down (helps height perception)
+  const pitchK = clamp((camera.pitch - 0.9) / 0.45, 0, 1);
+  if(pitchK > 0){
+    const edgeAlpha = 0.25 + 0.45 * pitchK;
+    const edgeW = 1 + 1.2 * pitchK;
+    const edgeColor = `rgba(0,0,0,${edgeAlpha.toFixed(2)})`;
+    const edges = [];
+    for(const b of boxes){
+      if(b.kind !== 'obstacle') continue;
+      collectObstacleEdges(b, occ, edges);
+    }
+    const merged = mergeEdges(edges);
+    for(const e of merged){
+      drawLine3D([{x:e.x,y:e.y0,z:e.z},{x:e.x,y:e.y1,z:e.z}], edgeColor, edgeW);
+    }
+  }
+
+  // Draw start/goal markers (tall)
+  const sPos = fineToWorldCenter(state.start.x, state.start.z, uToM(state.start.y));
+  const gPos = fineToWorldCenter(state.goal.x, state.goal.z, uToM(state.goal.y));
+  drawPoint3D({x:sPos.x,y:sPos.y+0.2,z:sPos.z}, '#2a7bd6', 6);
+  drawPoint3D({x:gPos.x,y:gPos.y+0.2,z:gPos.z}, '#d66f2a', 6);
+  // vertical stems
+  drawLine3D([{x:sPos.x,y:0,z:sPos.z},{x:sPos.x,y:sPos.y+1.5,z:sPos.z}], 'rgba(42,123,214,.7)', 2);
+  drawLine3D([{x:gPos.x,y:0,z:gPos.z},{x:gPos.x,y:gPos.y+1.5,z:gPos.z}], 'rgba(214,111,42,.7)', 2);
+
+  // Draw solver overlays
+  if(state.solver){
+    // Path
+    const pts = (state.solver.path||[]).map(n => fineToWorldCenter(n.x,n.z,uToM(n.y)));
+    if(pts.length>=2) drawLine3D(pts, 'rgba(122,76,214,.9)', 3);
+
+    // OPEN/CLOSED (sample for performance)
+    const searches = state.solver.searches;
+    const anchor = searches[0];
+
+    const openArr = anchor.open.arr;
+    const maxPts = 2500;
+
+    // OPEN
+    for(let i=0;i<openArr.length && i<maxPts;i++){
+      const n=openArr[i];
+      const p = fineToWorldCenter(n.x,n.z,uToM(n.y));
+      drawPoint3D({x:p.x,y:p.y+0.05,z:p.z}, 'rgba(27,59,34,.85)', 2.4);
+    }
+
+    // CLOSED union
+    // Build a sampled list of closed points across queues
+    let closedPts = [];
+    for(const s of searches){
+      let c=0;
+      for(const k of s.closed){
+        if(c++ > 800) break; // sample per queue
+        const parts = k.split('|');
+        const x=+parts[1], z=+parts[2], y=+parts[3];
+        const p = fineToWorldCenter(x,z,uToM(y));
+        closedPts.push(p);
+      }
+    }
+    closedPts = closedPts.slice(0, maxPts);
+    for(const p of closedPts){
+      drawPoint3D({x:p.x,y:p.y+0.05,z:p.z}, 'rgba(59,43,27,.75)', 2.2);
+    }
+  }
+
+  // Selected cell highlight
+  if(state.sel.valid){
+    const mx = state.sel.mx, mz = state.sel.mz;
+    // draw a thin rectangle on ground
+    const corners = [
+      {x:mx, y:0.01, z:mz},
+      {x:mx+1, y:0.01, z:mz},
+      {x:mx+1, y:0.01, z:mz+1},
+      {x:mx, y:0.01, z:mz+1},
+      {x:mx, y:0.01, z:mz},
+    ];
+    drawLine3D(corners, 'rgba(255,255,255,.6)', 2);
+  }
+
+  // Info overlay
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(10,10, 270, 78);
+  ctx.fillStyle = 'rgba(230,232,235,0.9)';
+  ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+  ctx.fillText(`Map: ${state.map.widthM}m x ${state.map.heightM}m  (fine ${state.map.widthFine}x${state.map.heightFine})`, 18, 30);
+  ctx.fillText(`Tool: ${state.tool}  |  Brush: ${state.brush}`, 18, 48);
+  ctx.fillText(`Cam: yaw ${camera.yaw.toFixed(2)}  pitch ${camera.pitch.toFixed(2)}  dist ${camera.dist.toFixed(1)}`, 18, 66);
+}
+
+function fineToWorldCenter(xi, zi, yM){
+  // node represents bottom-left of footprint; we render at its center-ish
+  // footprint is 2x2 subcells => 0.5m; center offset 0.25m
+  return {
+    x: xi*CELL + 0.25,
+    y: yM,
+    z: zi*CELL + 0.25,
+  };
+}
+
+// =============================== Editing Tools ===============================
+function setTool(name){
+  state.tool=name;
+  for(const t of document.querySelectorAll('.tool')){
+    t.classList.toggle('active', t.dataset.tool===name);
+  }
+}
+
+document.getElementById('toolbar').addEventListener('click', (e)=>{
+  const t = e.target.closest('.tool');
+  if(!t) return;
+  setTool(t.dataset.tool);
+});
+
+el('brush').addEventListener('change', ()=>{ state.brush = parseInt(el('brush').value,10)||0; });
+
+function paintAtFine(xi, zi, opts={}){
+  const tool = opts.tool || state.tool;
+  const brush = opts.brush ?? state.brush;
+
+  // Apply paint in a square brush on fine grid for HP/erase/start/goal; meter brush for terrain/LP
+  const tH = mToU(parseFloat(el('terrainH').value||'0'));
+  const tTex = parseInt(el('terrainTex').value||'1',10)||1;
+
+  const bMin = mToU(parseFloat(el('blkMin').value||'0'));
+  const bMax = mToU(parseFloat(el('blkMax').value||'2'));
+  const bTex = parseInt(el('blkTex').value||'3',10)||3;
+
+  const span = new Span(Math.min(bMin,bMax), Math.max(bMin,bMax), bTex);
+
+  // helper: iterate fine cells within brush
+  const applyFine = (fn)=>{
+    for(let dz=-brush; dz<=brush; dz++){
+      for(let dx=-brush; dx<=brush; dx++){
+        const x = xi+dx, z = zi+dz;
+        if(!state.map.inFineBounds(x,z)) continue;
+        fn(x,z);
+      }
+    }
+  };
+
+  // helper: iterate meter cells affected (brush in fine translated to meter)
+  const applyMeter = (fn)=>{
+    const mx0 = ((xi-brush)/SUB)|0;
+    const mz0 = ((zi-brush)/SUB)|0;
+    const mx1 = ((xi+brush)/SUB)|0;
+    const mz1 = ((zi+brush)/SUB)|0;
+    for(let mz=mz0;mz<=mz1;mz++){
+      for(let mx=mx0;mx<=mx1;mx++){
+        if(mx<0||mz<0||mx>=state.map.widthM||mz>=state.map.heightM) continue;
+        fn(mx,mz);
+      }
+    }
+  };
+
+  stopRun();
+  state.solver=null;
+
+  if(tool==='terrain'){
+    applyMeter((mx,mz)=>{
+      state.map.setTerrainAtMeter(mx,mz,tH,tTex);
+    });
+    state.lastMsg='已编辑地形（需要重新开始）';
+    return;
+  }
+
+  if(tool==='blockLP'){
+    applyMeter((mx,mz)=>{
+      state.map.addLowPrecisionSpanAtMeter(mx,mz,new Span(span.MinY, span.MaxY, span.Texture));
+    });
+    state.lastMsg='已添加低精阻挡（需要重新开始）';
+    return;
+  }
+
+  if(tool==='blockHP'){
+    applyFine((x,z)=>{
+      state.map.addHighPrecisionSpanAtFine(x,z,new Span(span.MinY, span.MaxY, span.Texture));
+    });
+    state.lastMsg='已添加高精阻挡（需要重新开始）';
+    return;
+  }
+
+  if(tool==='erase'){
+    applyFine((x,z)=>{
+      state.map.eraseObstaclesAtFine(x,z);
+    });
+    state.lastMsg='已擦除阻挡（需要重新开始）';
+    return;
+  }
+
+  if(tool==='start'){
+    // start uses bottom-left of 2x2 footprint
+    const sx = clamp(xi, 0, state.map.widthFine-2);
+    const sz = clamp(zi, 0, state.map.heightFine-2);
+    const endYMode = el('endYMode').value;
+    let sy = 0;
+    if(endYMode === 'auto'){
+      const params = buildParams();
+      sy = chooseInitialYAt(sx, sz, params);
+      if(sy == null){
+        state.lastMsg='起点无可落脚点（保持原位置）';
+        return;
+      }
+      el('startY').value = uToM(sy).toFixed(2);
+    } else {
+      sy = mToU(parseFloat(el('startY').value||'0'));
+    }
+    state.start = {x: sx, z: sz, y: sy|0};
+    state.lastMsg='已设置起点（需要重新开始）';
+    return;
+  }
+
+  if(tool==='goal'){
+    const gx = clamp(xi, 0, state.map.widthFine-2);
+    const gz = clamp(zi, 0, state.map.heightFine-2);
+    const endYMode = el('endYMode').value;
+    let gy = 0;
+    if(endYMode === 'auto'){
+      const params = buildParams();
+      gy = chooseInitialYAt(gx, gz, params);
+      if(gy == null){
+        state.lastMsg='终点无可落脚点（保持原位置）';
+        return;
+      }
+      el('goalY').value = uToM(gy).toFixed(2);
+    } else {
+      gy = mToU(parseFloat(el('goalY').value||'0'));
+    }
+    state.goal = {x: gx, z: gz, y: gy|0};
+    state.lastMsg='已设置终点（需要重新开始）';
+    return;
+  }
+
+  if(tool==='inspect'){
+    setSelectionFromFine(xi,zi);
+    state.lastMsg='已选中单元';
+    return;
+  }
+}
+
+// =============================== Pointer / Camera Interaction ===============================
+let pointer = {
+  mode: null, // 'orbit'|'pan'|'paint'
+  id: null,
+  lastX: 0,
+  lastY: 0,
+  lastCellKey: null,
+  moved: false,
+};
+
+function cellFromEvent(e){
+  const rect = cv.getBoundingClientRect();
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
+  const ray = rayFromScreen(sx, sy);
+  const hit = raycastCell(ray) || intersectPlaneY0(ray);
+  if(!hit) return null;
+
+  // convert world meters -> fine indices
+  const xi = Math.floor(hit.x / CELL);
+  const zi = Math.floor(hit.z / CELL);
+  if(!state.map.inFineBounds(xi,zi)) return null;
+  return {xi,zi,mx:hit.x,mz:hit.z};
+}
+
+cv.addEventListener('contextmenu', (e)=> e.preventDefault());
+
+cv.addEventListener('pointerdown', (e)=>{
+  cv.setPointerCapture(e.pointerId);
+  pointer.id = e.pointerId;
+  pointer.lastX = e.clientX;
+  pointer.lastY = e.clientY;
+  pointer.moved = false;
+
+  // Right button => orbit
+  if(e.button === 2 || (e.button===0 && e.shiftKey)){
+    pointer.mode = 'orbit';
+    return;
+  }
+  // Middle => pan
+  if(e.button === 1){
+    pointer.mode = 'pan';
+    return;
+  }
+
+  // Left => paint / inspect
+  if(e.button === 0){
+    const cell = cellFromEvent(e);
+    if(!cell) return;
+
+    const tool = (e.ctrlKey ? 'inspect' : state.tool);
+    paintAtFine(cell.xi, cell.zi, {tool});
+    pointer.mode = 'paint';
+    pointer.lastCellKey = `${cell.xi}|${cell.zi}|${tool}`;
+    updateStat();
+    render();
+  }
+});
+
+cv.addEventListener('pointermove', (e)=>{
+  if(pointer.id !== e.pointerId) return;
+  const dx = e.clientX - pointer.lastX;
+  const dy = e.clientY - pointer.lastY;
+  pointer.lastX = e.clientX;
+  pointer.lastY = e.clientY;
+  if(Math.abs(dx)+Math.abs(dy) > 2) pointer.moved = true;
+
+  if(pointer.mode === 'orbit'){
+    camera.yaw += dx * 0.005;
+    camera.pitch += dy * 0.005;
+    camera.pitch = clamp(camera.pitch, 0.15, 1.35);
+    render();
+    return;
+  }
+
+  if(pointer.mode === 'pan'){
+    // pan target in camera right/up plane
+    const {right, up} = getCamBasis();
+    const s = camera.dist * 0.002;
+    camera.target.x += (-dx*right.x + dy*up.x) * s;
+    camera.target.y += (-dx*right.y + dy*up.y) * s;
+    camera.target.z += (-dx*right.z + dy*up.z) * s;
+    render();
+    return;
+  }
+
+  if(pointer.mode === 'paint'){
+    const cell = cellFromEvent(e);
+    if(!cell) return;
+    const tool = (e.ctrlKey ? 'inspect' : state.tool);
+    const k = `${cell.xi}|${cell.zi}|${tool}`;
+    if(k === pointer.lastCellKey) return;
+    pointer.lastCellKey = k;
+    paintAtFine(cell.xi, cell.zi, {tool});
+    updateStat();
+    render();
+    return;
+  }
+});
+
+function endPointer(e){
+  if(pointer.id !== e.pointerId) return;
+  pointer.mode = null;
+  pointer.id = null;
+  pointer.lastCellKey = null;
+}
+
+cv.addEventListener('pointerup', endPointer);
+cv.addEventListener('pointercancel', endPointer);
+
+cv.addEventListener('wheel', (e)=>{
+  e.preventDefault();
+  const delta = Math.sign(e.deltaY);
+  camera.dist *= (delta>0) ? 1.08 : 0.92;
+  camera.dist = clamp(camera.dist, 5, 600);
+  render();
+},{passive:false});
+
+// =============================== UI Hooks ===============================
+el('reset').onclick = resetAll;
+el('clear').onclick = clearObstacles;
+el('step').onclick = stepOnceUI;
+el('run').onclick = startRun;
+el('pause').onclick = ()=>{ stopRun(); state.lastMsg='已暂停'; updateStat(); };
+el('finish').onclick = runToFinish;
+
+['algo','w1','w1All','w2','costM','costN','agentH','stepUp','stepDown','banTex','ignoreTex'].forEach(id=>{
+  el(id).addEventListener('change', ()=>{ stopRun(); state.solver=null; state.lastMsg='参数改变（需要重新开始）'; updateStat(); render(); });
+});
+el('speed').addEventListener('input', ()=>{ if(state.running){ startRun(); } });
+
+// 端点 Y 相关（自动/手动）
+function syncEndpointYUI(){
+  const mode = el('endYMode').value;
+  const params = buildParams();
+  let msg = '????/????????????';
+
+  if(mode === 'auto'){
+    el('startY').disabled = true;
+    el('goalY').disabled = true;
+    const sy = chooseInitialYAt(state.start.x, state.start.z, params);
+    const gy = chooseInitialYAt(state.goal.x,  state.goal.z,  params);
+    if(sy == null || gy == null){
+      msg = '??????????';
+    } else {
+      state.start.y = sy;
+      state.goal.y  = gy;
+      el('startY').value = uToM(state.start.y).toFixed(2);
+      el('goalY').value  = uToM(state.goal.y).toFixed(2);
+    }
+  } else {
+    el('startY').disabled = false;
+    el('goalY').disabled = false;
+    state.start.y = mToU(parseFloat(el('startY').value||'0'));
+    state.goal.y  = mToU(parseFloat(el('goalY').value||'0'));
+  }
+
+  stopRun();
+  state.solver = null;
+  state.lastMsg = msg;
+  updateStat();
+  render();
+}
+
+el('endYMode').addEventListener('change', syncEndpointYUI);
+el('startY').addEventListener('input', ()=>{
+  if(el('endYMode').value !== 'manual') return;
+  state.start.y = mToU(parseFloat(el('startY').value||'0'));
+  stopRun(); state.solver=null; state.lastMsg='起点 Y 改变（需要重新开始）'; updateStat(); render();
+});
+el('goalY').addEventListener('input', ()=>{
+  if(el('endYMode').value !== 'manual') return;
+  state.goal.y = mToU(parseFloat(el('goalY').value||'0'));
+  stopRun(); state.solver=null; state.lastMsg='终点 Y 改变（需要重新开始）'; updateStat(); render();
+});
+
+['mapW','mapH'].forEach(id=>{
+  el(id).addEventListener('change', ()=> resetAll());
+});
+
+// init
+window.addEventListener('resize', ()=>{ resizeCanvas(); render(); });
+resizeCanvas();
+resetAll();
+setTool('terrain');
+</script>
+</body>
+</html>
