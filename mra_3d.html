@@ -1398,12 +1398,32 @@ function drawPoint3D(p, color, r=3){
   ctx.fill();
 }
 
-function drawMarkerBox(x0, z0, y0, color){
+function drawMarkerBox(xi, zi, yU, color){
+  const x0 = xi * CELL;
+  const z0 = zi * CELL;
+  const y0 = uToM(yU) + 0.02;
   const h = 0.05; // 5cm height
   const faces = [];
   collectBoxFaces(faces, x0, z0, CELL, CELL, y0, y0 + h, color);
   faces.sort((a,b)=> b.depth - a.depth);
   for(const f of faces) drawFace(f);
+}
+
+function isMarkerVisible(xi, zi, yU, eye){
+  const center = {
+    x: xi * CELL + CELL/2,
+    y: uToM(yU) + 0.02 + 0.025,
+    z: zi * CELL + CELL/2,
+  };
+  const dx = center.x - eye.x;
+  const dy = center.y - eye.y;
+  const dz = center.z - eye.z;
+  const dist = Math.hypot(dx,dy,dz) || 1;
+  const ray = {o: eye, d:{x:dx/dist, y:dy/dist, z:dz/dist}};
+  const hit = raycastCell(ray);
+  if(!hit) return true;
+  // allow near-surface hits (marker sits just above the surface)
+  return hit.t >= (dist - 0.06);
 }
 
 // =============================== App State ===============================
@@ -1835,6 +1855,7 @@ function render(){
       }
     }
   }
+
   faces.sort((a,b)=> b.depth - a.depth);
   for(const f of faces) drawFace(f);
 
@@ -1866,44 +1887,35 @@ function render(){
 
   // Draw solver overlays
   if(state.solver){
-    // Path
+    // Path (still drawn on top for readability)
     const pts = (state.solver.path||[]).map(n => fineToWorldCenter(n.x,n.z,uToM(n.y)));
     if(pts.length>=2) drawLine3D(pts, 'rgba(122,76,214,.9)', 3);
 
-    // OPEN/CLOSED (sample for performance)
+    // OPEN/CLOSED markers (occluded by terrain/obstacles via ray test)
+    const {eye} = getCamBasis();
     const searches = state.solver.searches;
     const anchor = searches[0];
-
     const openArr = anchor.open.arr;
     const maxPts = 2500;
-
-    // OPEN
     for(let i=0;i<openArr.length && i<maxPts;i++){
       const n=openArr[i];
-      const x0 = n.x * CELL;
-      const z0 = n.z * CELL;
-      const y0 = uToM(n.y) + 0.02;
-      drawMarkerBox(x0, z0, y0, '#1b6b39');
+      if(!isMarkerVisible(n.x, n.z, n.y, eye)) continue;
+      drawMarkerBox(n.x, n.z, n.y, '#1b6b39');
     }
 
-    // CLOSED union
-    // Build a sampled list of closed points across queues
     let closedPts = [];
     for(const s of searches){
       let c=0;
       for(const k of s.closed){
-        if(c++ > 800) break; // sample per queue
+        if(c++ > 800) break;
         const parts = k.split('|');
-        const x=+parts[1], z=+parts[2], y=+parts[3];
-        closedPts.push({x,z,y});
+        closedPts.push({x:+parts[1], z:+parts[2], y:+parts[3]});
       }
     }
     closedPts = closedPts.slice(0, maxPts);
     for(const p of closedPts){
-      const x0 = p.x * CELL;
-      const z0 = p.z * CELL;
-      const y0 = uToM(p.y) + 0.02;
-      drawMarkerBox(x0, z0, y0, '#7a4b2a');
+      if(!isMarkerVisible(p.x, p.z, p.y, eye)) continue;
+      drawMarkerBox(p.x, p.z, p.y, '#7a4b2a');
     }
   }
 
