@@ -641,6 +641,55 @@ function GetInterval(terrain, spans, curY, ignoreTexture, forbiddenTexture, heig
   return new Span(gapMinY, finalMax, gapTex);
 }
 
+// GetIntervalAtY: return the gap that contains targetY (if valid), otherwise null.
+function GetIntervalAtY(terrain, spans, targetY, ignoreTexture, forbiddenTexture, height){
+  const tMax = terrain.MaxY|0;
+  if(targetY < tMax) return null; // inside terrain (blocking)
+
+  let gapMinY = tMax;
+  let gapTex = terrain.Texture|0;
+  const n = spans.length;
+
+  if(n === 0){
+    const gapMaxY = 65535;
+    if(gapMaxY - gapMinY < height) return null;
+    if(forbiddenTexture !== 0 && (gapTex & forbiddenTexture) !== 0) return null;
+    if(targetY >= gapMinY && targetY < gapMaxY){
+      return new Span(gapMinY, gapMaxY, gapTex);
+    }
+    return null;
+  }
+
+  for(const v of spans){
+    if(ignoreTexture !== 0 && (v.Texture & ignoreTexture) !== 0) continue;
+    if(v.MaxY <= gapMinY) continue;
+
+    if(v.MinY < gapMinY){
+      gapMinY = v.MaxY;
+      gapTex = v.Texture|0;
+      continue;
+    }
+
+    const gapMaxY = v.MinY;
+    if(targetY >= gapMinY && targetY < gapMaxY){
+      if(gapMaxY - gapMinY < height) return null;
+      if(forbiddenTexture !== 0 && (gapTex & forbiddenTexture) !== 0) return null;
+      return new Span(gapMinY, gapMaxY, gapTex);
+    }
+
+    gapMinY = v.MaxY;
+    gapTex = v.Texture|0;
+  }
+
+  const finalMax = 65535;
+  if(targetY >= gapMinY && targetY < finalMax){
+    if(finalMax - gapMinY < height) return null;
+    if(forbiddenTexture !== 0 && (gapTex & forbiddenTexture) !== 0) return null;
+    return new Span(gapMinY, finalMax, gapTex);
+  }
+  return null;
+}
+
 const footprintOffsets = [[0,0],[1,0],[0,1],[1,1]];
 
 function resolveFootprintAt(map, xi, zi, curY, params){
@@ -1409,6 +1458,31 @@ function drawMarkerBox(xi, zi, yU, color){
   for(const f of faces) drawFace(f);
 }
 
+function resolveFootprintAtTarget(map, xi, zi, targetY, params){
+  if(!map.inFineBounds(xi,zi) || !map.inFineBounds(xi+1,zi+1)) return {ok:false};
+  const gaps = [];
+  for(const [dx,dz] of footprintOffsets){
+    const [terrain, obs] = map.getSpansAtFine(xi+dx, zi+dz, targetY);
+    if(!terrain) return {ok:false};
+    const gap = GetIntervalAtY(
+      terrain,
+      obs,
+      targetY,
+      params.ignoreTexMask,
+      params.banTexMask,
+      params.agentHUnits
+    );
+    if(!gap) return {ok:false};
+    gaps.push(gap);
+  }
+  let landingY = gaps[0].MinY;
+  for(const g of gaps) landingY = Math.max(landingY, g.MinY);
+  for(const g of gaps){
+    if(landingY + params.agentHUnits > g.MaxY) return {ok:false};
+  }
+  return {ok:true, y: landingY};
+}
+
 function isMarkerVisible(xi, zi, yU, eye){
   const center = {
     x: xi * CELL + CELL/2,
@@ -1522,8 +1596,14 @@ function buildParams(){
 }
 
 // Determine a deterministic start/goal y by selecting the lowest feasible floor that has clearance
-function chooseInitialYAt(xi, zi, params){
-  // Use curY = 0 for ignore rule (no ignore effect), and no step constraints (set huge)
+function chooseInitialYAt(xi, zi, params, targetYUnits){
+  // If targetYUnits is provided, try to lock onto the gap that contains it.
+  if(targetYUnits != null){
+    const r = resolveFootprintAtTarget(state.map, xi, zi, targetYUnits|0, params);
+    if(!r.ok) return null;
+    return r.y|0;
+  }
+  // Otherwise pick the lowest feasible floor (no step constraints)
   const p2 = {...params, stepUpUnits: 65535, stepDownUnits: 65535};
   const r = resolveFootprintAt(state.map, xi, zi, 0, p2);
   if(!r.ok) return null;
@@ -1552,8 +1632,10 @@ function rebuildSolver(){
   // - 手动：严格使用输入的 y；如果在阻挡里/净空不足则直接失败（符合你的要求）
   const endYMode = el('endYMode').value;
   if(endYMode === 'auto'){
-    const sy = chooseInitialYAt(state.start.x, state.start.z, params);
-    const gy = chooseInitialYAt(state.goal.x, state.goal.z, params);
+    let sy = chooseInitialYAt(state.start.x, state.start.z, params, state.start.y);
+    let gy = chooseInitialYAt(state.goal.x, state.goal.z, params, state.goal.y);
+    if(sy == null) sy = chooseInitialYAt(state.start.x, state.start.z, params);
+    if(gy == null) gy = chooseInitialYAt(state.goal.x, state.goal.z, params);
     if(sy == null || gy == null){
       state.solver=null;
       state.lastMsg='起点或终点无可落脚点';
@@ -2051,7 +2133,7 @@ function paintAtFine(xi, zi, opts={}){
     let sy = 0;
     if(endYMode === 'auto'){
       const params = buildParams();
-      sy = chooseInitialYAt(sx, sz, params);
+      sy = chooseInitialYAt(sx, sz, params, opts.hitYUnits);
       if(sy == null){
         state.lastMsg='起点无可落脚点（保持原位置）';
         return;
@@ -2072,7 +2154,7 @@ function paintAtFine(xi, zi, opts={}){
     let gy = 0;
     if(endYMode === 'auto'){
       const params = buildParams();
-      gy = chooseInitialYAt(gx, gz, params);
+      gy = chooseInitialYAt(gx, gz, params, opts.hitYUnits);
       if(gy == null){
         state.lastMsg='终点无可落脚点（保持原位置）';
         return;
@@ -2115,7 +2197,7 @@ function cellFromEvent(e){
   const xi = Math.floor(hit.x / CELL);
   const zi = Math.floor(hit.z / CELL);
   if(!state.map.inFineBounds(xi,zi)) return null;
-  return {xi,zi,mx:hit.x,mz:hit.z};
+  return {xi,zi,mx:hit.x,mz:hit.z, hitYUnits: mToU(hit.y)};
 }
 
 cv.addEventListener('contextmenu', (e)=> e.preventDefault());
@@ -2144,7 +2226,7 @@ cv.addEventListener('pointerdown', (e)=>{
     if(!cell) return;
 
     const tool = (e.ctrlKey ? 'inspect' : state.tool);
-    paintAtFine(cell.xi, cell.zi, {tool});
+    paintAtFine(cell.xi, cell.zi, {tool, hitYUnits: cell.hitYUnits});
     pointer.mode = 'paint';
     pointer.lastCellKey = `${cell.xi}|${cell.zi}|${tool}`;
     updateStat();
@@ -2186,7 +2268,7 @@ cv.addEventListener('pointermove', (e)=>{
     const k = `${cell.xi}|${cell.zi}|${tool}`;
     if(k === pointer.lastCellKey) return;
     pointer.lastCellKey = k;
-    paintAtFine(cell.xi, cell.zi, {tool});
+    paintAtFine(cell.xi, cell.zi, {tool, hitYUnits: cell.hitYUnits});
     updateStat();
     render();
     return;
@@ -2266,8 +2348,10 @@ function syncEndpointYUI(){
   if(mode === 'auto'){
     el('startY').disabled = true;
     el('goalY').disabled = true;
-    const sy = chooseInitialYAt(state.start.x, state.start.z, params);
-    const gy = chooseInitialYAt(state.goal.x,  state.goal.z,  params);
+    let sy = chooseInitialYAt(state.start.x, state.start.z, params, state.start.y);
+    let gy = chooseInitialYAt(state.goal.x,  state.goal.z,  params, state.goal.y);
+    if(sy == null) sy = chooseInitialYAt(state.start.x, state.start.z, params);
+    if(gy == null) gy = chooseInitialYAt(state.goal.x,  state.goal.z,  params);
     if(sy == null || gy == null){
       msg = '??????????';
     } else {
