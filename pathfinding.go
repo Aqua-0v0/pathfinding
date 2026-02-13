@@ -204,7 +204,7 @@ func (pf *Pathfinder) edgePass(x, z int32, h20 uint16, d Dir) (uint16, bool) {
 	if v, ok := pf.ec.m[key]; ok {
 		return v.nh, v.ok
 	}
-	
+
 	// 目标宏格中心四子格
 	tx := x
 	tz := z
