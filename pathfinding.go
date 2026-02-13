@@ -85,7 +85,7 @@ func (pf *Pathfinder) FindPath(sx, sz int32, sh20 uint16, gx, gz int32) ([][3]fl
 	for open.Len() > 0 {
 		cur := heap.Pop(open).(*node)
 		if cur.x == gx && cur.z == gz {
-			return pf.reconstruct(cur), true
+			return pf.reconstruct(cur)
 		}
 		for _, d := range []Dir{E, W, N, S, NE, NW, SE, SW} {
 			nx, nz := step(cur.x, cur.z, d)
@@ -204,10 +204,7 @@ func (pf *Pathfinder) edgePass(x, z int32, h20 uint16, d Dir) (uint16, bool) {
 	if v, ok := pf.ec.m[key]; ok {
 		return v.nh, v.ok
 	}
-
-	// 源宏格中心四子格（quarter坐标）
-	cxq := (x << 2) + 1
-	czq := (z << 2) + 1
+	
 	// 目标宏格中心四子格
 	tx := x
 	tz := z

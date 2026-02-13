@@ -1,8 +1,8 @@
 package hpc
 
 import (
-	"ZGame/tools/pathfinding/map_data"
 	"math"
+	"pathfinding/map_data"
 	"runtime"
 	"testing"
 	"unsafe"

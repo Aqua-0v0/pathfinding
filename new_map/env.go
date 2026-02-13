@@ -99,26 +99,26 @@ func (e *Env) gridOfPoint(lp Point2d) *GridRBData {
 	return e.grids[i]
 }
 
-type routeCtx struct {
-	g         *GridRBData
-	sourceP2d Point2d
-	cellIdx   int
+type RouteCtx struct {
+	G         *GridRBData
+	SourceP2d Point2d
+	CellIdx   int
 
 	// HP
-	isHP   bool
-	subIdx int
+	IsHP   bool
+	SubIdx int
 }
 
 // route 路由 Point2d 到对应的 grid + cellIdx + HP 信息.
-func (e *Env) route(p Point2d) (c routeCtx, ok bool) {
+func (e *Env) Route(p Point2d) (c RouteCtx, ok bool) {
 	if !e.Validate2d(p) {
-		return routeCtx{}, false
+		return RouteCtx{}, false
 	}
 
 	// 2) 找 grid
 	g := e.gridOfPoint(p)
 	if g == nil {
-		return routeCtx{}, false
+		return RouteCtx{}, false
 	}
 
 	// 3) cellIdx
@@ -130,17 +130,17 @@ func (e *Env) route(p Point2d) (c routeCtx, ok bool) {
 	if isHP {
 		si, ok2 := SubIdxFromPoint2d(p)
 		if !ok2 {
-			return routeCtx{}, false
+			return RouteCtx{}, false
 		}
 		subIdx = si
 	}
 
-	return routeCtx{
-		g:         g,
-		sourceP2d: p,
-		cellIdx:   cellIdx,
-		isHP:      isHP,
-		subIdx:    subIdx,
+	return RouteCtx{
+		G:         g,
+		SourceP2d: p,
+		CellIdx:   cellIdx,
+		IsHP:      isHP,
+		SubIdx:    subIdx,
 	}, true
 }
 
@@ -270,111 +270,21 @@ func terrainRR(g *GridRBData, cellIdx int) (RichRange, bool) {
 
 // CheckBaseHeightLoaded : 检查基础高度是否加载
 func (e *Env) CheckBaseHeightLoaded(p Point2d) bool {
-	rc, ok := e.route(p)
+	rc, ok := e.Route(p)
 	if !ok {
 		return false
 	}
-	d := rc.g.CellByIdx(rc.cellIdx)
+	d := rc.G.CellByIdx(rc.CellIdx)
 	return d != nil
 }
 
 // GetIsHighPrecision 查询 Point2d 的位置是否是高精点
 func (e *Env) GetIsHighPrecision(p Point2d) bool {
-	rc, ok := e.route(p)
+	rc, ok := e.Route(p)
 	if !ok {
 		return false
 	}
-	return rc.isHP
-}
-
-func appendRangesFromSource(op TreeOps, root int32, base []RichRange, override bool, out []RichRange) []RichRange {
-	if override {
-		if root < 0 {
-			return out
-		}
-		t := NewRichRangeTree(op.pool)
-		t.SetRoot(root)
-		t.ForeachAll(func(rr RichRange) bool {
-			if rr.End > 0 && rr.Range.Len() > 0 {
-				out = append(out, rr)
-			}
-			return true
-		})
-		return out
-	}
-
-	rangeQueryBaseSlice(base, MaxRange, func(rr RichRange) bool {
-		if rr.End > 0 && rr.Range.Len() > 0 {
-			out = append(out, rr)
-		}
-		return true
-	})
-	return out
-}
-
-// GetTerrainAndSpansByPoint returns terrain and blocking spans for one point.
-// Spans are sorted by (End asc, Begin asc), matching map_data.GetInterval expectations.
-func (e *Env) GetTerrainAndSpansByPoint(p Point2d) (terrain RichRange, spans []RichRange, ok bool) {
-	rc, ok := e.route(p)
-	if !ok {
-		return RichRange{}, nil, false
-	}
-
-	g := rc.g
-	d := g.CellByIdx(rc.cellIdx)
-	if d == nil {
-		return RichRange{}, nil, false
-	}
-
-	terrain, ok = terrainRR(g, rc.cellIdx)
-	if !ok {
-		return RichRange{}, nil, false
-	}
-
-	hasAnyHP := cellHasAnyHP(d)
-	effIsHP := rc.isHP
-	effSubIdx := rc.subIdx
-	if effIsHP {
-		if !hasAnyHP {
-			effIsHP = false
-			effSubIdx = 0
-		}
-	} else if hasAnyHP {
-		effIsHP = true
-		effSubIdx = 0
-	}
-
-	op := g.Ops()
-	spans = make([]RichRange, 0, 16)
-
-	lpRoot, lpBase, lpOverride := g.lpSource(rc.cellIdx)
-	spans = appendRangesFromSource(op, lpRoot, lpBase, lpOverride, spans)
-
-	if effIsHP {
-		hpRoot, hpBase, hpOverride := g.hpSource(rc.cellIdx, effSubIdx)
-		spans = appendRangesFromSource(op, hpRoot, hpBase, hpOverride, spans)
-	}
-
-	// Terrain is returned separately; remove exact duplicate entries from spans.
-	w := 0
-	for i := 0; i < len(spans); i++ {
-		rr := spans[i]
-		if rr.Range == terrain.Range && rr.Accessory == terrain.Accessory {
-			continue
-		}
-		spans[w] = rr
-		w++
-	}
-	spans = spans[:w]
-
-	sort.Slice(spans, func(i, j int) bool {
-		if spans[i].End == spans[j].End {
-			return spans[i].Begin < spans[j].Begin
-		}
-		return spans[i].End < spans[j].End
-	})
-
-	return terrain, spans, true
+	return rc.IsHP
 }
 
 // addRangePoint 添加 RangePoint 到 Env 中.
@@ -383,7 +293,7 @@ func (e *Env) GetTerrainAndSpansByPoint(p Point2d) (terrain RichRange, spans []R
 func (e *Env) addRangePoint(p Point3d, accessory Accessory) bool {
 	p2d := p.Point2d()
 
-	rc, ok := e.route(p2d)
+	rc, ok := e.Route(p2d)
 	if !ok {
 		return false
 	}
@@ -395,14 +305,14 @@ func (e *Env) addRangePoint(p Point3d, accessory Accessory) bool {
 		Accessory: accessory,
 	}
 
-	if !rc.isHP {
-		rootPtr := rc.g.ensureDirtyLP(rc.cellIdx)
-		return rc.g.includeOnRoot(rootPtr, rr)
+	if !rc.IsHP {
+		rootPtr := rc.G.ensureDirtyLP(rc.CellIdx)
+		return rc.G.includeOnRoot(rootPtr, rr)
 	}
 
-	baseHP := rc.g.BaseHPOf(rc.cellIdx, rc.subIdx)
-	rootPtr := rc.g.ensureDirtyHP(rc.cellIdx, rc.subIdx, baseHP)
-	return rc.g.includeOnRoot(rootPtr, rr)
+	baseHP := rc.G.BaseHPOf(rc.CellIdx, rc.SubIdx)
+	rootPtr := rc.G.ensureDirtyHP(rc.CellIdx, rc.SubIdx, baseHP)
+	return rc.G.includeOnRoot(rootPtr, rr)
 }
 
 // removeRangePoint 从 EnvRB 中删除 RangePoint（overlay 区间）。
@@ -412,13 +322,13 @@ func (e *Env) addRangePoint(p Point3d, accessory Accessory) bool {
 //   - 若输入是 HP，但该 tile 没有 HP：对齐老逻辑，返回 false,false（不支持从低精中删除高精）。
 func (e *Env) removeRangePoint(p Point3d, accessory Accessory) (isHeightPChange, succ bool) {
 	p2d := p.Point2d()
-	rc, ok := e.route(p2d)
+	rc, ok := e.Route(p2d)
 	if !ok {
 		return false, false
 	}
 
-	g := rc.g
-	cellIdx := rc.cellIdx
+	g := rc.G
+	cellIdx := rc.CellIdx
 	d := g.CellByIdx(cellIdx)
 	if d == nil {
 		return false, false
@@ -430,7 +340,7 @@ func (e *Env) removeRangePoint(p Point3d, accessory Accessory) (isHeightPChange,
 	changedLP := false
 	changedHP := false
 
-	if !rc.isHP {
+	if !rc.IsHP {
 		rootPtr := g.ensureDirtyLP(cellIdx)
 		changedLP = g.excludeOnRoot(rootPtr, exc, cfg)
 
@@ -455,12 +365,12 @@ func (e *Env) removeRangePoint(p Point3d, accessory Accessory) (isHeightPChange,
 		if !cellHasAnyHP(d) {
 			return false, false
 		}
-		if d.HighPrecision == nil || !d.HighPrecision.HasSpan(rc.subIdx) {
+		if d.HighPrecision == nil || !d.HighPrecision.HasSpan(rc.SubIdx) {
 			return false, false
 		}
 
-		baseHP := g.BaseHPOf(cellIdx, rc.subIdx)
-		hpRoot := g.ensureDirtyHP(cellIdx, rc.subIdx, baseHP)
+		baseHP := g.BaseHPOf(cellIdx, rc.SubIdx)
+		hpRoot := g.ensureDirtyHP(cellIdx, rc.SubIdx, baseHP)
 		if hpRoot != nil {
 			changedHP = g.excludeOnRoot(hpRoot, exc, cfg)
 		}
@@ -484,12 +394,12 @@ func (e *Env) SkyNeighbour(p Point3d, excludes ...func(txt Texture, rng Range) b
 		return SnapRichRange{}, false
 	}
 
-	rc, ok0 := e.route(p2d)
+	rc, ok0 := e.Route(p2d)
 	if !ok0 {
 		return SnapRichRange{}, false
 	}
-	g := rc.g
-	d := g.CellByIdx(rc.cellIdx)
+	g := rc.G
+	d := g.CellByIdx(rc.CellIdx)
 	if d == nil {
 		return SnapRichRange{}, false
 	}
@@ -497,8 +407,8 @@ func (e *Env) SkyNeighbour(p Point3d, excludes ...func(txt Texture, rng Range) b
 
 	// 精度对齐 old GetByPoint2d
 	hasAnyHP := cellHasAnyHP(d)
-	effIsHP := rc.isHP
-	effSubIdx := rc.subIdx
+	effIsHP := rc.IsHP
+	effSubIdx := rc.SubIdx
 	if effIsHP {
 		if !hasAnyHP {
 			effIsHP = false
@@ -541,13 +451,13 @@ func (e *Env) SkyNeighbour(p Point3d, excludes ...func(txt Texture, rng Range) b
 	}
 
 	// 1) Terrain
-	if ter, okTer := terrainRR(g, rc.cellIdx); okTer {
+	if ter, okTer := terrainRR(g, rc.CellIdx); okTer {
 		tryUpdateBest(ter)
 	}
 
 	// 2) LP
 	{
-		root, base, override := g.lpSource(rc.cellIdx)
+		root, base, override := g.lpSource(rc.CellIdx)
 		if override {
 			if root >= 0 {
 				t := NewRichRangeTree(op.pool)
@@ -568,7 +478,7 @@ func (e *Env) SkyNeighbour(p Point3d, excludes ...func(txt Texture, rng Range) b
 
 	// 3) HP：effIsHP 才参与
 	if effIsHP {
-		root, base, override := g.hpSource(rc.cellIdx, effSubIdx)
+		root, base, override := g.hpSource(rc.CellIdx, effSubIdx)
 		if override {
 			if root >= 0 {
 				t := NewRichRangeTree(op.pool)
@@ -775,12 +685,12 @@ func equalRRs(a, b []RichRange) bool {
 // orCoverZeroIgnoredTex：回补 “覆盖高度 0” 的、且满足 isIgnored 的 RR 的纹理。
 // 用于 gap.Begin==0 时的 UseIgnoreTexture 语义对齐：旧结构的 stackTxt 能在起点就带出 ignored floor rr。
 func (e *Env) orCoverZeroIgnoredTex(p2d Point2d, isIgnored func(rr RichRange) bool) (out Texture) {
-	rc, ok := e.route(p2d)
+	rc, ok := e.Route(p2d)
 	if !ok {
 		return 0
 	}
-	g := rc.g
-	cellIdx := rc.cellIdx
+	g := rc.G
+	cellIdx := rc.CellIdx
 	d := g.CellByIdx(cellIdx)
 	if d == nil {
 		return 0
@@ -789,8 +699,8 @@ func (e *Env) orCoverZeroIgnoredTex(p2d Point2d, isIgnored func(rr RichRange) bo
 
 	// 精度对齐 old GetByPoint2d：HP 不存在则降级；LP 但 tile 有 HP 则默认 HP(1,1)
 	hasAnyHP := cellHasAnyHP(d)
-	effIsHP := rc.isHP
-	effSubIdx := rc.subIdx
+	effIsHP := rc.IsHP
+	effSubIdx := rc.SubIdx
 	if effIsHP {
 		if !hasAnyHP {
 			effIsHP = false
