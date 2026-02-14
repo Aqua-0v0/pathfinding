@@ -625,6 +625,39 @@ func (g *GridRBData) GetRoots(p2d Point2d) (lRoot int32, hRoot int32) {
 	return
 }
 
+// DirtyFirstInOrderNode returns the left-most node index of a dirty encoded root.
+// If encodedRoot is not dirty or invalid, it returns NilIdx().
+func (g *GridRBData) DirtyFirstInOrderNode(encodedRoot int32) int32 {
+	if !IsDirtyEncodedRoot(encodedRoot) || g.dirtyOps.pool == nil {
+		return NilIdx()
+	}
+	root := DecodeDirtyRoot(encodedRoot)
+	if root < 0 || int(root) >= len(g.dirtyOps.pool.nodes) {
+		return NilIdx()
+	}
+	nodes := g.dirtyOps.pool.nodes
+	cur := root
+	for cur != NilIdx() {
+		l := nodes[cur].left
+		if l == NilIdx() {
+			break
+		}
+		cur = l
+	}
+	return cur
+}
+
+// DirtyNextInOrderNode returns the in-order successor of nodeIdx in dirty tree.
+// It returns NilIdx() if there is no successor.
+func (g *GridRBData) DirtyNextInOrderNode(nodeIdx int32) int32 {
+	return g.inorderSuccessor(nodeIdx)
+}
+
+// DirtyNodeRichRange returns the RichRange stored at nodeIdx of dirty tree.
+func (g *GridRBData) DirtyNodeRichRange(nodeIdx int32) (rr RichRange, ok bool) {
+	return g.nodeRichRange(nodeIdx)
+}
+
 // overlap test: rr 与查询范围 rrs.Range 是否有交集
 func overlapRichRange(rr RichRange, q Range) bool {
 	return rr.End > q.Begin && rr.Begin < q.End
